@@ -1,0 +1,69 @@
+name: tapeo_go
+description: "TapeoGo: Tu pasaporte gastronómico por Sevilla. Proyecto Desarrollo de Aplicaciones Multiplataforma."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.3.0 <4.0.0' # Actualizado a una versión más moderna de Dart
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  image_picker: ^1.0.7        # Selector de imágenes de la galería
+
+
+  # --- PERSISTENCIA Y BACKEND ---
+  supabase_flutter: ^2.0.0 # Gestión de base de datos, Auth y Storage
+  provider: ^6.1.1         # Gestión de estado (Motores Notifiers)
+
+  # --- MAPAS Y GEOLOCALIZACIÓN ---
+  google_maps_flutter: ^2.5.3 # Visualización del mapa de Sevilla
+  geolocator: ^10.1.0         # Validación de distancia GPS para el Check-in
+
+  # --- HARDWARE Y MULTIMEDIA ---
+  camera: ^0.12.0+1           # Acceso nativo a la cámara del dispositivo
+  image_picker: ^1.0.7        # Selector de imágenes de la galería
+  path_provider: ^2.1.5       # Gestión de rutas de archivos temporales
+
+  # --- UTILIDADES ---
+  intl: ^0.20.2               # Formateo de fechas y moneda (español)
+  confetti: ^0.7.0            # Animación de celebración para las medallas
+
+  # --- HERRAMIENTAS DE DESARROLLO (UI/UX) ---
+  device_preview: ^1.3.1      # Previsualización en distintos tamaños de pantalla
+  flutter_native_splash: ^2.4.7 # Generación automática de pantalla de carga
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  # Línea para poder generar los iconos
+  flutter_launcher_icons: ^0.13.1 
+
+flutter:
+  uses-material-design: true
+
+  # --- ACTIVOS (ASSETS) ---
+  assets:
+    - assets/images/logo.png
+    - assets/images/logoconletra.png
+    - assets/badges/ # IMPORTANTE: Dejamos la carpeta de medallas lista para el futuro
+
+# --- CONFIGURACIÓN DE ICONO DE LA APP ---
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/images/logo.png"
+  adaptive_icon_background: "#FFFFFF"
+  adaptive_icon_foreground: "assets/images/logo.png"
+
+# --- CONFIGURACIÓN DE SPLASH SCREEN (PANTALLA DE CARGA) ---
+flutter_native_splash:
+  color: "#FFA500" # Naranja corporativo
+  image: "assets/images/logo.png"
+  android_12:
+    image: "assets/images/logo.png"
+    color: "#FFA500"
+  fullscreen: true
