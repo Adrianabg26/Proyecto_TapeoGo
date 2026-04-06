@@ -1,5 +1,8 @@
 # TapeoGo - La Guía de Tapeo Inteligente
 
+<div align="center">
+  <img src="https://raw.githubusercontent.com/Adrianabg26/Proyecto_TapeoGo/main/assets/images/logoconletra.png" width="200"/>
+</div>
 
 **TapeoGo** es una aplicación móvil multiplataforma diseñada para digitalizar y gamificar la experiencia del tapeo tradicional. El proyecto nace como Trabajo de Fin de Grado (TFG) para el ciclo de **Desarrollo de Aplicaciones Multiplataforma (DAM)**.
 
