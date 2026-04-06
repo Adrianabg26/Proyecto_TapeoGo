@@ -11,6 +11,7 @@ import 'package:flutter/foundation.dart';
 // ENTIDAD: BadgeModel
 // Mapea la tabla 'badges' de Supabase/PostgreSQL.
 // ─────────────────────────────────────────────────────────────────────────────
+
 @immutable
 class BadgeModel {
   final String id; // Identificador único de la medalla.

@@ -27,6 +27,9 @@ class ProfileScreen extends StatefulWidget {
   State<ProfileScreen> createState() => _ProfileScreenState();
 }
 
+// TickerProviderStateMixin (sin "Single") porque TabController también
+// necesita un ticker además del propio widget. Con SingleTickerProviderStateMixin
+// solo se puede gestionar un ticker a la vez, lo que provocaría un error.
 class _ProfileScreenState extends State<ProfileScreen>
     with TickerProviderStateMixin {
   late TabController _tabController;
@@ -34,12 +37,18 @@ class _ProfileScreenState extends State<ProfileScreen>
   @override
   void initState() {
     super.initState();
+    // length: 2 porque hay dos pestañas: Medallas e Historial.
+    // vsync: this conecta el controlador con el ticker del mixin.
     _tabController = TabController(length: 2, vsync: this);
 
+    // addPostFrameCallback garantiza que el BuildContext está listo
+    // antes de acceder a los Providers.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final String? userId = context.read<AuthNotifier>().currentUserId;
       if (userId != null) {
-        // Cargamos medallas e historial al inicializarse la pantalla
+        // Cargamos medallas e historial al inicializarse la pantalla.
+        // Las dos llamadas son independientes: si una falla la otra
+        // sigue ejecutándose.
         context.read<BadgeNotifier>().fetchBadges(userId);
         context.read<VisitNotifier>().fetchHistory(userId);
       }
@@ -48,18 +57,23 @@ class _ProfileScreenState extends State<ProfileScreen>
 
   @override
   void dispose() {
-    // Liberamos el TabController para evitar fugas de memoria
+    // TabController mantiene listeners internos sobre el estado de la pestaña
+    // activa. Sin dispose() se producen fugas de memoria.
     _tabController.dispose();
     super.dispose();
   }
 
   Future<void> _refreshData() async {
-    final authNotifier = context.read<AuthNotifier>();
+    // Guardamos las referencias a los notifiers antes del await para
+    // evitar async gaps con BuildContext tras la operación asíncrona.
+    final authNotifier  = context.read<AuthNotifier>();
     final badgeNotifier = context.read<BadgeNotifier>();
     final visitNotifier = context.read<VisitNotifier>();
 
     final String? userId = context.read<AuthNotifier>().currentUserId;
     if (userId != null) {
+      // Las tres llamadas son secuenciales (await): primero el perfil,
+      // luego las medallas y finalmente el historial.
       await authNotifier.fetchProfile();
       await badgeNotifier.fetchBadges(userId);
       await visitNotifier.fetchHistory(userId);
@@ -68,13 +82,19 @@ class _ProfileScreenState extends State<ProfileScreen>
 
   @override
   Widget build(BuildContext context) {
-    final auth = context.watch<AuthNotifier>();
-    final profile = auth.profile;
+    // context.watch suscribe el widget a cambios en AuthNotifier,
+    // BadgeNotifier y VisitNotifier. Cualquier notifyListeners() en
+    // cualquiera de los tres provoca el rebuild de este build().
+    final auth         = context.watch<AuthNotifier>();
+    final profile      = auth.profile;
     final badgeNotifier = context.watch<BadgeNotifier>();
     final visitNotifier = context.watch<VisitNotifier>();
 
-    final int xpTotal = profile?.xpTotal ?? 0;
-    final int nivel = profile?.userLevel ?? 1;
+    // Los getters de ProfileModel calculan rango, nivel y progreso
+    // directamente desde xp_total sin consultas adicionales a Supabase.
+    // El operador ?? proporciona valores por defecto si profile es null.
+    final int xpTotal         = profile?.xpTotal ?? 0;
+    final int nivel           = profile?.userLevel ?? 1;
     final double progresoNivel = profile?.xpProgress ?? 0.0;
 
     return Scaffold(
@@ -91,11 +111,15 @@ class _ProfileScreenState extends State<ProfileScreen>
           IconButton(
             icon: const Icon(Icons.logout, color: Colors.redAccent),
             tooltip: 'Cerrar sesión',
+            // auth.logout() limpia todos los notifiers mediante
+            // registerNotifiers() y llama a supabase.auth.signOut().
+            // El StreamBuilder de main.dart detecta el cambio de sesión
+            // y navega automáticamente a LoginScreen.
             onPressed: () => auth.logout(),
           ),
         ],
-        // TabBar integrado en el AppBar para que quede fijo
-        // mientras el contenido hace scroll
+        // TabBar en el bottom del AppBar para que quede fijo en pantalla
+        // mientras el contenido de las pestañas hace scroll.
         bottom: TabBar(
           controller: _tabController,
           labelColor: AppColors.primary,
@@ -103,10 +127,13 @@ class _ProfileScreenState extends State<ProfileScreen>
           indicatorColor: AppColors.primary,
           tabs: const [
             Tab(icon: Icon(Icons.emoji_events_outlined), text: 'Medallas'),
-            Tab(icon: Icon(Icons.history), text: 'Historial'),
+            Tab(icon: Icon(Icons.history),                text: 'Historial'),
           ],
         ),
       ),
+      // Mientras profile es null (primera carga) mostramos el spinner.
+      // En cuanto AuthNotifier llama a notifyListeners() con el perfil
+      // cargado, este build() se re-ejecuta y muestra el contenido real.
       body: profile == null
           ? const Center(
               child: CircularProgressIndicator(color: Colors.orange),
@@ -114,21 +141,25 @@ class _ProfileScreenState extends State<ProfileScreen>
           : RefreshIndicator(
               color: Colors.orange,
               onRefresh: _refreshData,
+              // NestedScrollView coordina el scroll de la cabecera con
+              // el scroll interno de cada pestaña (ListView o SingleChildScrollView).
+              // Sin él, la cabecera y el contenido harían scroll de forma
+              // independiente y la cabecera quedaría siempre visible.
               child: NestedScrollView(
-                // NestedScrollView permite que la cabecera haga scroll
-                // junto con el contenido de cada pestaña
                 headerSliverBuilder: (context, innerBoxIsScrolled) => [
                   SliverToBoxAdapter(
                     child: Column(
                       children: [
+                        // ProfileHeader consume los getters de ProfileModel
+                        // ya calculados arriba, sin lógica de negocio en la UI.
                         ProfileHeader(
-                          fullName: profile.fullName,
-                          username: profile.username,
-                          level: nivel,
-                          rankTitle: profile.userRank,
+                          fullName:   profile.fullName,
+                          username:   profile.username,
+                          level:      nivel,
+                          rankTitle:  profile.userRank,
                           xpProgress: progresoNivel,
-                          xpTotal: xpTotal,
-                          avatarUrl: profile.avatarUrl,
+                          xpTotal:    xpTotal,
+                          avatarUrl:  profile.avatarUrl,
                         ),
                         const Divider(height: 1, thickness: 1),
                       ],
@@ -156,12 +187,18 @@ class _ProfileScreenState extends State<ProfileScreen>
 
   Widget _buildMedallasTab(BadgeNotifier badgeNotifier) {
     return SingleChildScrollView(
+      // AlwaysScrollableScrollPhysics permite el gesto de pull-to-refresh
+      // aunque el contenido no sea suficiente para hacer scroll.
       physics: const AlwaysScrollableScrollPhysics(),
       child: Column(
         children: [
+          // BadgesHeader muestra el contador de medallas desbloqueadas
+          // sobre el total del catálogo.
           const BadgesHeader(),
           const Padding(
             padding: EdgeInsets.symmetric(horizontal: 15, vertical: 10),
+            // BadgesGrid renderiza la cuadrícula de 9 medallas.
+            // Consume BadgeNotifier internamente mediante context.watch.
             child: BadgesGrid(),
           ),
           const SizedBox(height: 40),
@@ -175,6 +212,9 @@ class _ProfileScreenState extends State<ProfileScreen>
   // ───────────────────────────────────────────────────────────────────────────
 
   Widget _buildHistorialTab(VisitNotifier visitNotifier) {
+    // isProcessing true con lista vacía indica primera carga.
+    // Si la lista ya tiene datos y se está recargando, no mostramos
+    // el spinner para no ocultar el contenido existente.
     if (visitNotifier.isProcessing && visitNotifier.visits.isEmpty) {
       return const Center(
         child: CircularProgressIndicator(color: Colors.orange),
@@ -182,6 +222,8 @@ class _ProfileScreenState extends State<ProfileScreen>
     }
 
     if (visitNotifier.visits.isEmpty) {
+      // ListView en lugar de Column para que RefreshIndicator detecte
+      // el gesto de pull-to-refresh también en el estado vacío.
       return ListView(
         physics: const AlwaysScrollableScrollPhysics(),
         children: [
@@ -195,6 +237,9 @@ class _ProfileScreenState extends State<ProfileScreen>
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.all(15),
       itemCount: visitNotifier.visits.length,
+      // builder construye cada tarjeta bajo demanda, solo cuando
+      // el ítem es visible en pantalla. Más eficiente que un Column
+      // con todos los ítems construidos de una vez.
       itemBuilder: (context, index) {
         return _buildVisitCard(visitNotifier.visits[index]);
       },
@@ -219,6 +264,8 @@ class _ProfileScreenState extends State<ProfileScreen>
 
   Widget _buildVisitCard(VisitModel visit) {
     return Card(
+      // Clip.antiAlias recorta la imagen de la tarjeta con el mismo
+      // borderRadius de la Card, evitando esquinas cuadradas en la imagen.
       clipBehavior: Clip.antiAlias,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       elevation: 2,
@@ -250,6 +297,9 @@ class _ProfileScreenState extends State<ProfileScreen>
                                 ),
                               ),
                               const SizedBox(width: 8),
+                              // El icono de verificado solo aparece si
+                              // gpsVerified es true, es decir si el check-in
+                              // se realizó dentro del radio de 100 metros.
                               if (visit.gpsVerified)
                                 const Icon(
                                   Icons.verified,
@@ -267,6 +317,8 @@ class _ProfileScreenState extends State<ProfileScreen>
                                 color: AppColors.textGrey,
                               ),
                               const SizedBox(width: 5),
+                              // DateFormat del paquete intl formatea DateTime
+                              // al patrón legible dd/MM/yyyy - HH:mm.
                               Text(
                                 DateFormat('dd/MM/yyyy - HH:mm')
                                     .format(visit.createdAt),
@@ -280,9 +332,14 @@ class _ProfileScreenState extends State<ProfileScreen>
                         ],
                       ),
                     ),
+                    // Badge con el tipo de consumo registrado (serranito,
+                    // cerveza, etc.) en mayúsculas para destacarlo visualmente.
                     _buildTypeBadge(visit.recordType),
                   ],
                 ),
+                // El comentario solo se renderiza si existe y no está vacío.
+                // El operador spread ... inserta los widgets de la lista
+                // directamente dentro del Column padre.
                 if (visit.comment != null && visit.comment!.isNotEmpty) ...[
                   const Padding(
                     padding: EdgeInsets.symmetric(vertical: 8.0),
@@ -301,7 +358,7 @@ class _ProfileScreenState extends State<ProfileScreen>
                           visit.comment!,
                           style: TextStyle(
                             fontStyle: FontStyle.italic,
-                            color:AppColors.subtitleOrange,
+                            color: AppColors.subtitleOrange,
                           ),
                         ),
                       ),
@@ -323,6 +380,8 @@ class _ProfileScreenState extends State<ProfileScreen>
         height: 160,
         width: double.infinity,
         fit: BoxFit.cover,
+        // loadingBuilder muestra un placeholder mientras la imagen
+        // se descarga. progress == null indica que la carga terminó.
         loadingBuilder: (context, child, progress) {
           if (progress == null) return child;
           return Container(
@@ -336,6 +395,8 @@ class _ProfileScreenState extends State<ProfileScreen>
             ),
           );
         },
+        // errorBuilder se activa si la URL es inválida o la descarga falla.
+        // Muestra el icono del tipo de tapa como fallback visual.
         errorBuilder: (context, error, stackTrace) => Container(
           height: 100,
           width: double.infinity,
@@ -348,6 +409,7 @@ class _ProfileScreenState extends State<ProfileScreen>
         ),
       );
     }
+    // Si photoUrl es null muestra directamente el icono del tipo de tapa.
     return Container(
       height: 100,
       width: double.infinity,
@@ -378,6 +440,8 @@ class _ProfileScreenState extends State<ProfileScreen>
     );
   }
 
+  // Switch que mapea cada valor de record_type al icono más representativo.
+  // El caso default cubre 'generic' y cualquier valor no contemplado.
   IconData _getIconForType(String type) {
     switch (type) {
       case 'serranito':

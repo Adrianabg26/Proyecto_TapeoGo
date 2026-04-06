@@ -25,24 +25,15 @@ import 'package:flutter/foundation.dart';
 
 @immutable
 class ProfileModel {
-  /// UUID del usuario, vinculado directamente a 'auth.users' de Supabase.
-  final String id;
+  
+  final String id;// UUID del usuario, vinculado directamente a 'auth.users' de Supabase.
+  final String username; // Nombre de usuario público dentro de la comunidad TapeoGo.
+  final String fullName; // Nombre y apellidos del usuario para personalización de la interfaz.
+  final String? avatarUrl; // URL de la imagen de perfil almacenada en Supabase Storage.
+  // Campo opcional: puede ser null si el usuario no ha subido foto.
+  final DateTime? updatedAt;  // Fecha de la última modificación del perfil.
 
-  /// Nombre de usuario público dentro de la comunidad TapeoGo.
-  final String username;
-
-  /// Nombre y apellidos del usuario para personalización de la interfaz.
-  final String fullName;
-
-  /// URL de la imagen de perfil almacenada en Supabase Storage.
-  /// Campo opcional: puede ser null si el usuario no ha subido foto.
-  final String? avatarUrl;
-
-  /// Fecha de la última modificación del perfil.
-  /// Corresponde al tipo 'timestamptz' de PostgreSQL.
-  final DateTime? updatedAt;
-
-  /// Puntos de experiencia acumulados por el usuario.
+  // Puntos de experiencia acumulados por el usuario.
   /// Se incrementa al desbloquear medallas, sumando el 'xp_bonus'
   /// de cada [BadgeModel] obtenido. Determina el rango del usuario
   /// mediante el getter [userRank].
@@ -126,10 +117,4 @@ class ProfileModel {
       'xp_total': xpTotal,
     };
   }
-
-  /// Sobrescritura de [toString] para facilitar el depurado en consola.
-  @override
-  String toString() =>
-      'ProfileModel(id: $id, username: $username, '
-      'xpTotal: $xpTotal, level: $userLevel, rank: $userRank)';
 }
