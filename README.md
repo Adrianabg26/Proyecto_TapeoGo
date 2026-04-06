@@ -1,8 +1,5 @@
-# TapeoGo 🍢 - La Guía de Tapeo Inteligente
+# TapeoGo - La Guía de Tapeo Inteligente
 
-<p align="center">
-  <img src="assets/logocontexto.png" width="150" alt="Logo TapeoGo">
-</p>
 
 **TapeoGo** es una aplicación móvil multiplataforma diseñada para digitalizar y gamificar la experiencia del tapeo tradicional. El proyecto nace como Trabajo de Fin de Grado (TFG) para el ciclo de **Desarrollo de Aplicaciones Multiplataforma (DAM)**.
 
@@ -25,13 +22,18 @@
 
 ## Estructura del Proyecto
 
-```text
 lib/
+
 ├── models/          # Entidades de datos (Visit, Bar, Badge, Profile)
+
 ├── notifiers/       # Lógica de negocio y gestión de estado (Providers)
+
 ├── screens/         # Capas de interfaz de usuario (UI)
+
 ├── widgets/         # Componentes reutilizables
+
 ├── utils/           # Funciones y utilidades
+
 └── main.dart        # Punto de entrada y configuración de proveedores
 
 ## Seguridad y Arquitectura
@@ -47,7 +49,7 @@ La lógica de medallas se procesa mediante consultas relacionales asíncronas pa
 ## Instalación y Ejecución
 
 Clonar el repositorio:
-git clone [https://github.com/tu-usuario/tapeogo.git](https://github.com/tu-usuario/tapeogo.git)
+git clone (https://github.com/Adrianabg26/Proyecto_TapeoGo.git )
 
 Instalar dependencias:
 flutter pub get
@@ -57,10 +59,6 @@ Crea un archivo de configuración o inicializa las claves URL y AnonKey en tu ma
 
 Lanzar la aplicación:
 flutter run
-
-## Capturas de Pantalla
-
-
 
 ## Licencia e Información
 Proyecto desarrollado para el TFG de Desarrollo de Aplicaciones Multiplataforma (2026).
