@@ -11,9 +11,6 @@ dependencies:
   flutter:
     sdk: flutter
 
-  image_picker: ^1.0.7        # Selector de imágenes de la galería
-
-
   # --- PERSISTENCIA Y BACKEND ---
   supabase_flutter: ^2.0.0 # Gestión de base de datos, Auth y Storage
   provider: ^6.1.1         # Gestión de estado (Motores Notifiers)

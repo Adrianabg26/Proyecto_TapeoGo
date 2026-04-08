@@ -117,7 +117,7 @@ class _SplashScreenState extends State<SplashScreen>
                     // height: 220 con BoxFit.contain garantiza que el logo
                     // nunca se deforma ni sale de sus límites.
                     Image.asset(
-                      'assets/logoconletra.png',
+                      'assets/images/logoconletra.png',
                       height: 220,
                       fit: BoxFit.contain,
                     ),
