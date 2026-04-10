@@ -1,0 +1,2 @@
+const supabaseUrl = 'https://sozrahpiywpklhrwrgbr.supabase.co';
+const supabaseAnonKey ='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InNvenJhaHBpeXdwa2xocndyZ2JyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA4MjA0NTEsImV4cCI6MjA4NjM5NjQ1MX0.9cJY5pJw4ui39mCZCnx4-CrrRtF4EitfhouHQvrv-rc';

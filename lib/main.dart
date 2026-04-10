@@ -25,6 +25,8 @@ import 'screens/main_screen.dart';
 import 'screens/login_screen.dart';
 import 'screens/splash_screen.dart';
 
+import 'config/supabase_config.dart';
+
 Future<void> main() async {
   // Obligatorio al usar plugins que acceden a hardware (GPS, cámara).
   // Garantiza que el motor de Flutter esté vinculado antes de iniciar
@@ -34,8 +36,8 @@ Future<void> main() async {
   // Inicializamos Supabase antes de arrancar la app para garantizar
   // que la base de datos y el sistema de autenticación estén disponibles.
   await Supabase.initialize(
-    url: 'TU_URL_DE_SUPABASE',
-    anonKey: 'TU_ANON_KEY',
+    url: supabaseUrl,
+    anonKey: supabaseAnonKey,
   );
 
   // Creamos las instancias de los notifiers antes de pasarlas al árbol
