@@ -2,26 +2,21 @@
     package="com.example.tapeo_go">
 
     <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission
-        android:name="android.permission.CAMERA" />
-    <uses-feature
-        android:name="android.hardware.camera" />
-    <uses-feature
-        android:name="android.hardware.camera.autofocus" />
-    <uses-permission
-        android:name="android.permission.ACCESS_FINE_LOCATION" />
-    <uses-permission
-        android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" />
+    <uses-feature android:name="android.hardware.camera.autofocus" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
 
-    <uses-permission
-        android:name="android.permission.READ_EXTERNAL_STORAGE" />CD ANDROID <application
+    <application
         android:label="TapeoGo"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
 
         <meta-data
             android:name="com.google.android.geo.API_KEY"
-            android:value="AIzaSyDHeYFD6bgty_wjuTRzDZYyPkCYRJA15pg" />
+            android:value="${MAPS_API_KEY}" />
 
         <activity
             android:name=".MainActivity"
@@ -56,8 +51,6 @@
             <action android:name="android.intent.action.PROCESS_TEXT" />
             <data android:mimeType="text/plain" />
         </intent>
-
-        <!-- Permite lanzar la app de teléfono con url_launcher -->
         <intent>
             <action android:name="android.intent.action.DIAL" />
             <data android:scheme="tel" />
