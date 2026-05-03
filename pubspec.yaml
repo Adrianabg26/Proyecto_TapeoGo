@@ -5,62 +5,69 @@ publish_to: 'none'
 version: 1.0.0+1
 
 environment:
-  sdk: '>=3.3.0 <4.0.0' # Actualizado a una versión más moderna de Dart
+  sdk: '>=3.3.0 <4.0.0'
 
 dependencies:
   flutter:
     sdk: flutter
 
   # --- PERSISTENCIA Y BACKEND ---
-  supabase_flutter: ^2.0.0 # Gestión de base de datos, Auth y Storage
-  provider: ^6.1.1         # Gestión de estado (Motores Notifiers)
+  supabase_flutter: ^2.0.0  # BD, Auth y Storage
+  provider: ^6.1.1          # Gestión de estado con ChangeNotifier
 
   # --- MAPAS Y GEOLOCALIZACIÓN ---
-  google_maps_flutter: ^2.5.3 # Visualización del mapa de Sevilla
-  geolocator: ^10.1.0         # Validación de distancia GPS para el Check-in
+  google_maps_flutter: ^2.5.3  # Mapa interactivo de Sevilla
+  geolocator: ^10.1.0          # Validación de proximidad GPS en el check-in
 
-  # --- HARDWARE Y MULTIMEDIA ---
-  camera: ^0.12.0+1           # Acceso nativo a la cámara del dispositivo
-  image_picker: ^1.0.7        # Selector de imágenes de la galería
-  path_provider: ^2.1.5       # Gestión de rutas de archivos temporales
+  # --- MULTIMEDIA ---
+  image_picker: ^1.0.7    # Selección de foto desde cámara o galería
+  path_provider: ^2.1.5   # Rutas de archivos temporales en el dispositivo
+  url_launcher: ^6.2.6    # Abrir enlaces externos
 
   # --- UTILIDADES ---
-  intl: ^0.20.2               # Formateo de fechas y moneda (español)
-  confetti: ^0.7.0            # Animación de celebración para las medallas
+  intl: ^0.20.2         # Formateo de fechas en español
+  confetti: ^0.7.0      # Animación de celebración al desbloquear medallas
+  google_fonts: ^6.1.0  # Tipografía Poppins global
+  shimmer: ^3.0.0       # Animación de esqueleto durante la carga de datos
 
-  # --- HERRAMIENTAS DE DESARROLLO (UI/UX) ---
-  device_preview: ^1.3.1      # Previsualización en distintos tamaños de pantalla
-  flutter_native_splash: ^2.4.7 # Generación automática de pantalla de carga
+  # --- HERRAMIENTAS UI/UX ---
+  device_preview: ^1.3.1         # Vista previa en distintos tamaños de pantalla
+  flutter_native_splash: ^2.4.7  # Pantalla de carga nativa
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
-  # Línea para poder generar los iconos
-  flutter_launcher_icons: ^0.13.1 
+  flutter_launcher_icons: ^0.13.1  # Generación automática del icono de la app
 
 flutter:
   uses-material-design: true
 
-  # --- ACTIVOS (ASSETS) ---
   assets:
     - assets/images/logo.png
     - assets/images/logoconletra.png
-    - assets/badges/ # IMPORTANTE: Dejamos la carpeta de medallas lista para el futuro
+    - assets/images/logo_mapa.png
+    - assets/images/logoapp.png
+    - assets/images/logosplash.png
 
-# --- CONFIGURACIÓN DE ICONO DE LA APP ---
+# --- ICONO DE LA APP ---
 flutter_launcher_icons:
   android: true
   ios: true
-  image_path: "assets/images/logo.png"
+  image_path: "assets/images/logosplash.png"
   adaptive_icon_background: "#FFFFFF"
-  adaptive_icon_foreground: "assets/images/logo.png"
+  adaptive_icon_foreground: "assets/images/logosplash.png"
+  
 
-# --- CONFIGURACIÓN DE SPLASH SCREEN (PANTALLA DE CARGA) ---
+# --- SPLASH SCREEN NATIVA ---
 flutter_native_splash:
-  color: "#FFA500" # Naranja corporativo
-  image: "assets/images/logo.png"
+  color: "#FFFFFF" 
+  image: "assets/images/logoapp.png"
+
   android_12:
-    image: "assets/images/logo.png"
-    color: "#FFA500"
-  fullscreen: true
+    image: "assets/images/logoapp.png"
+    color: "#FFFFFF"
+
+  android: true
+  ios: true
+

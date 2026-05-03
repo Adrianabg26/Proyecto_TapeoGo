@@ -17,7 +17,7 @@ class AppColors {
   /// Naranja oscuro para títulos y nombres sobre fondo blanco.
   /// Cumple los estándares de contraste WCAG AA (ratio > 4.5:1).
   /// Usado en nombres de bares, títulos de sección y nombres de usuario.
-  static const Color titleOrange = Color(0xFF92400E);
+  static const Color titleOrange = Color.fromARGB(255, 226, 102, 26);
 
   /// Naranja medio para subtítulos y textos secundarios sobre fondo blanco.
   /// Usado en distritos, rangos y etiquetas secundarias.

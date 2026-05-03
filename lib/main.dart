@@ -1,17 +1,20 @@
 /// main.dart
 ///
-/// Punto de entrada de TapeoGo. Inicializa Supabase, configura el árbol
-/// de providers con todos los notifiers y gestiona la navegación raíz
-/// mediante un StreamBuilder que escucha el estado de autenticación.
+/// Punto de entrada de TapeoGo.
 ///
-/// El patrón "Portero Automatizado" con StreamBuilder garantiza que
-/// la app siempre muestre la pantalla correcta según el estado de sesión,
-/// sin necesidad de gestionar la navegación manualmente tras el login
-/// o el logout.
+/// Responsabilidades:
+///   - Inicializar Supabase antes de arrancar la app.
+///   - Crear e inyectar todos los notifiers en el árbol de widgets
+///     mediante MultiProvider.
+///   - Registrar las referencias entre notifiers para la limpieza al logout.
+///   - Gestionar la navegación raíz con el patrón "Portero Automatizado":
+///     un StreamBuilder que escucha onAuthStateChange de Supabase y
+///     redirige automáticamente entre LoginScreen y MainScreen.
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:google_fonts/google_fonts.dart';
 
 import 'notifiers/auth_notifier.dart';
 import 'notifiers/profile_notifier.dart';
@@ -27,21 +30,25 @@ import 'screens/splash_screen.dart';
 
 import 'config/supabase_config.dart';
 
+// Key global del ScaffoldMessenger para mostrar SnackBars desde notifiers
+// y pantallas dentro del IndexedStack sin conflictos de contexto.
+final GlobalKey<ScaffoldMessengerState> scaffoldMessengerKey =
+    GlobalKey<ScaffoldMessengerState>();
+
 Future<void> main() async {
-  // Obligatorio al usar plugins que acceden a hardware (GPS, cámara).
-  // Garantiza que el motor de Flutter esté vinculado antes de iniciar
-  // procesos asíncronos.
+  // Obligatorio cuando se usan plugins que acceden a hardware (GPS, cámara).
+  // Garantiza que el motor de Flutter esté listo antes de operaciones async.
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Inicializamos Supabase antes de arrancar la app para garantizar
-  // que la base de datos y el sistema de autenticación estén disponibles.
+  // Supabase debe inicializarse antes de runApp para que la BD y el
+  // sistema de autenticación estén disponibles desde el primer frame.
   await Supabase.initialize(
     url: supabaseUrl,
     anonKey: supabaseAnonKey,
   );
 
-  // Creamos las instancias de los notifiers antes de pasarlas al árbol
-  // de providers para poder registrarlas en AuthNotifier.
+  // Creamos las instancias manualmente antes de inyectarlas en el árbol
+  // para poder pasarlas a AuthNotifier.registerNotifiers().
   final authNotifier = AuthNotifier();
   final badgeNotifier = BadgeNotifier();
   final favoriteNotifier = FavoriteNotifier();
@@ -51,9 +58,9 @@ Future<void> main() async {
   final wishlistNotifier = WishlistNotifier();
 
   // Registramos en AuthNotifier las referencias a todos los notifiers
-  // que deben limpiarse al cerrar sesión. Esto evita que los datos
-  // del usuario anterior sean visibles si otro inicia sesión en el
-  // mismo dispositivo.
+  // que deben limpiarse al cerrar sesión — patrón de inyección de dependencias.
+  // Esto evita que los datos de un usuario sean visibles si otro inicia
+  // sesión en el mismo dispositivo sin reinstalar la app.
   authNotifier.registerNotifiers(
     badgeNotifier: badgeNotifier,
     favoriteNotifier: favoriteNotifier,
@@ -64,9 +71,11 @@ Future<void> main() async {
   );
 
   runApp(
-    // MultiProvider inyecta todos los notifiers en la raíz del árbol
-    // de widgets, permitiendo que cualquier pantalla acceda a ellos
+    // MultiProvider inyecta todos los notifiers en la raíz del árbol.
+    // Cualquier pantalla puede acceder a ellos con context.watch/read
     // sin acoplamiento directo entre pantallas y lógica de negocio.
+    // ChangeNotifierProvider.value usa las instancias ya creadas
+    // en lugar de crearlas dentro del provider.
     MultiProvider(
       providers: [
         ChangeNotifierProvider.value(value: authNotifier),
@@ -90,34 +99,51 @@ class TapeoGoApp extends StatelessWidget {
     return MaterialApp(
       title: 'TapeoGo',
       debugShowCheckedModeBanner: false,
+      // Key global para mostrar SnackBars desde cualquier punto de la app.
+      scaffoldMessengerKey: scaffoldMessengerKey,
       theme: ThemeData(
-        scaffoldBackgroundColor: const Color(0xFFF5F5F5),
+        scaffoldBackgroundColor: Colors.white,
         colorScheme: ColorScheme.fromSeed(
           seedColor: Colors.orange,
           primary: Colors.orange,
         ),
         useMaterial3: true,
+        // Poppins como fuente global de TapeoGo.
+        // Al aplicarla al textTheme base se propaga automáticamente
+        // a todos los componentes: botones, diálogos, textos, AppBars.
+        textTheme: GoogleFonts.poppinsTextTheme(
+          ThemeData.light().textTheme,
+        ),
       ),
 
-      // StreamBuilder actúa como "portero automatizado".
-      // Escucha onAuthStateChange de Supabase y redirige automáticamente
-      // entre LoginScreen y MainScreen según el estado de sesión,
-      // sin necesidad de navegación manual tras login o logout.
+      // StreamBuilder — patrón "Portero Automatizado".
+      // Escucha onAuthStateChange de Supabase en tiempo real.
+      // Cuando el usuario hace login o logout, Supabase emite un evento
+      // y el StreamBuilder reconstruye automáticamente mostrando
+      // MainScreen o LoginScreen sin navegación manual.
       home: StreamBuilder<AuthState>(
         stream: Supabase.instance.client.auth.onAuthStateChange,
         builder: (context, snapshot) {
-          // Fase de sincronización: comprobando si hay sesión guardada
+          // ConnectionState.waiting: comprobando sesión guardada en disco.
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const SplashScreen();
           }
 
-          final session = snapshot.hasData ? snapshot.data!.session : null;
+          // FutureBuilder anidado garantiza un mínimo de 2 segundos de
+          // SplashScreen para que la animación del logo sea visible.
+          return FutureBuilder(
+            future: Future.delayed(const Duration(seconds: 2)),
+            builder: (context, futureSnapshot) {
+              if (futureSnapshot.connectionState != ConnectionState.done) {
+                return const SplashScreen();
+              }
 
-          if (session != null) {
-            return const MainScreen();
-          } else {
-            return const LoginScreen();
-          }
+              final session = snapshot.hasData ? snapshot.data!.session : null;
+
+              // Sesión activa → MainScreen. Sin sesión → LoginScreen.
+              return session != null ? const MainScreen() : const LoginScreen();
+            },
+          );
         },
       ),
     );

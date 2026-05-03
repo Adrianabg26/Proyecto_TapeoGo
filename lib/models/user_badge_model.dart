@@ -1,26 +1,22 @@
 /// user_badge_model.dart
 ///
-/// Modelo de datos para la tabla intermedia 'user_badges' de TapeoGo.
-/// Resuelve la relación N:M entre 'profiles' y 'badges' (ver Diagrama E/R),
-/// registrando qué usuario ha desbloqueado qué medalla y en qué momento
-/// exacto.
+/// Modelo inmutable que mapea la tabla intermedia 'user_badges' de Supabase.
+/// Resuelve la relación N:M entre 'profiles' y 'badges' del diagrama E/R:
+/// un usuario puede tener muchas medallas y una medalla puede ser obtenida
+/// por muchos usuarios.
 ///
-/// Es una entidad de asociación pura: su existencia depende de la
-/// concurrencia de un perfil válido y una medalla válida en el sistema.
+/// Registra qué usuario ha desbloqueado qué medalla y en qué momento.
+/// Es una entidad de asociación pura — solo tiene sentido con un
+/// usuario válido y una medalla válida referenciados.
 
 import 'package:flutter/foundation.dart';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// ENTIDAD: UserBadgeModel
-// Mapea la tabla intermedia 'user_badges' de Supabase/PostgreSQL.
-// ─────────────────────────────────────────────────────────────────────────────
-
 @immutable
 class UserBadgeModel {
-  final String id; // Identificador único del registro de concesión del logro.
-  final String userId; // UUID del usuario beneficiario del logro. Referencia a 'profiles.id'.
-  final String badgeId; // ID de la medalla obtenida. Referencia a 'badges.id'.
-  final DateTime unlockedAt; // Marca temporal exacta en la que se cumplieron los requisitos de desbloqueo.
+  final String id;           // UUID generado por Supabase
+  final String userId;       // FK → tabla profiles
+  final String badgeId;      // FK → tabla badges
+  final DateTime unlockedAt; // Marca temporal del desbloqueo — formato ISO 8601
 
   const UserBadgeModel({
     required this.id,
@@ -30,32 +26,34 @@ class UserBadgeModel {
   });
 
   // ───────────────────────────────────────────────────────────────────────────
-  // DESERIALIZACIÓN: Supabase → Dart
-  // Transforma los tipos primitivos recibidos de la API REST de Supabase
-  // en objetos complejos de Dart, permitiendo realizar cálculos temporales
-  // o formateo de fechas en la interfaz de usuario.
+  // fromJson — deserialización Supabase → Dart
+  // DateTime.parse interpreta el formato ISO 8601 (timestamptz) que
+  // devuelve Supabase para campos de tipo timestamp with time zone.
+  // unlockedAt se usa en BadgeItem para mostrar la fecha de desbloqueo
+  // en el modal de detalle de la medalla.
   // ───────────────────────────────────────────────────────────────────────────
 
   factory UserBadgeModel.fromJson(Map<String, dynamic> json) {
     return UserBadgeModel(
-      id: json['id'] as String,
-      userId: json['user_id'] as String,
-      badgeId: json['badge_id'] as String,
-      // DateTime.parse interpreta el formato ISO 8601 que devuelve Supabase
-      // para los campos de tipo 'timestamptz'.
+      id:         json['id'] as String,
+      userId:     json['user_id'] as String,
+      badgeId:    json['badge_id'] as String,
       unlockedAt: DateTime.parse(json['unlocked_at'] as String),
     );
   }
+
   // ───────────────────────────────────────────────────────────────────────────
-  // SERIALIZACIÓN: Dart → Supabase
-  // Solo se envían 'user_id' y 'badge_id' en la inserción. Los campos 'id'
-  // y 'unlocked_at' los genera automáticamente el motor PostgreSQL de Supabase.
-  // Este método se invoca desde BadgeNotifier.checkAchievements() cuando
-  // el usuario cumple los requisitos de desbloqueo de una medalla.
+  // toJson — serialización Dart → Supabase
+  // Solo se envían user_id y badge_id en el INSERT.
+  // id lo genera Supabase automáticamente (UUID).
+  // unlocked_at usa DEFAULT now() en PostgreSQL.
+  // Se invoca desde BadgeNotifier._checkAchievements() cuando el usuario
+  // cumple los requisitos de desbloqueo de una medalla.
   // ───────────────────────────────────────────────────────────────────────────
+
   Map<String, dynamic> toJson() {
     return {
-      'user_id': userId,
+      'user_id':  userId,
       'badge_id': badgeId,
     };
   }

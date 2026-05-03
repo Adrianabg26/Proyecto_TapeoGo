@@ -1,54 +1,54 @@
 /// profile_screen.dart
 ///
-/// Pantalla de perfil del usuario en TapeoGo. Muestra la cabecera con
-/// el avatar, nombre, rango, nivel y barra de XP, y dos pestañas internas:
-///   - Medallas: cuadrícula de logros desbloqueados y pendientes.
-///   - Historial: registro cronológico de visitas realizadas.
+/// Pantalla de perfil del usuario en TapeoGo.
 ///
-/// Es un StatefulWidget porque necesita initState para cargar medallas
-/// e historial, y un TickerProviderStateMixin para el TabController.
+/// Muestra el header con avatar, nombre, rango y barra de XP,
+/// las estadísticas de medallas y XP total, y un TabController
+/// con dos pestañas: grid de medallas e historial de visitas.
+///
+/// El avatar es interactivo — al pulsarlo abre la galería para
+/// cambiar la foto de perfil mediante ImagePicker y AuthNotifier.
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
+import 'package:image_picker/image_picker.dart';
 import '../notifiers/auth_notifier.dart';
 import '../notifiers/badge_notifier.dart';
 import '../notifiers/visit_notifier.dart';
 import '../models/visit_model.dart';
 import '../widgets/profile_header.dart';
-import '../widgets/badges_header.dart';
 import '../widgets/badges_grid.dart';
 import '../utils/app_colors.dart';
+import 'edit_profile_screen.dart';
+import '../utils/string_extensions.dart';
 
 class ProfileScreen extends StatefulWidget {
-  const ProfileScreen({super.key});
+  final VoidCallback onGoToExplore;
+  const ProfileScreen({super.key, required this.onGoToExplore});
 
   @override
   State<ProfileScreen> createState() => _ProfileScreenState();
 }
 
-// TickerProviderStateMixin (sin "Single") porque TabController también
-// necesita un ticker además del propio widget. Con SingleTickerProviderStateMixin
-// solo se puede gestionar un ticker a la vez, lo que provocaría un error.
 class _ProfileScreenState extends State<ProfileScreen>
     with TickerProviderStateMixin {
+
+  // TabController para las pestañas Medallas e Historial.
+  // TickerProviderStateMixin proporciona el vsync necesario para
+  // sincronizar la animación del tab con el refresco de pantalla.
   late TabController _tabController;
 
   @override
   void initState() {
     super.initState();
-    // length: 2 porque hay dos pestañas: Medallas e Historial.
-    // vsync: this conecta el controlador con el ticker del mixin.
     _tabController = TabController(length: 2, vsync: this);
 
-    // addPostFrameCallback garantiza que el BuildContext está listo
-    // antes de acceder a los Providers.
+    // addPostFrameCallback garantiza que el árbol de widgets está construido
+    // antes de solicitar datos a Supabase desde los notifiers.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final String? userId = context.read<AuthNotifier>().currentUserId;
       if (userId != null) {
-        // Cargamos medallas e historial al inicializarse la pantalla.
-        // Las dos llamadas son independientes: si una falla la otra
-        // sigue ejecutándose.
         context.read<BadgeNotifier>().fetchBadges(userId);
         context.read<VisitNotifier>().fetchHistory(userId);
       }
@@ -57,23 +57,58 @@ class _ProfileScreenState extends State<ProfileScreen>
 
   @override
   void dispose() {
-    // TabController mantiene listeners internos sobre el estado de la pestaña
-    // activa. Sin dispose() se producen fugas de memoria.
+    // Obligatorio liberar el TabController en dispose()
+    // para evitar fugas de memoria al salir de la pantalla.
     _tabController.dispose();
     super.dispose();
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // MÉTODO: _pickAndUploadAvatar
+  // Flujo completo de actualización de foto de perfil desde la galería.
+  //
+  // 1. Abre la galería con imageQuality: 50 para optimizar el tamaño
+  //    del archivo antes de subirlo a Supabase Storage.
+  // 2. Muestra un SnackBar de feedback inmediato mientras se procesa.
+  // 3. Delega la subida a AuthNotifier.updateAvatar() que gestiona
+  //    el upload al bucket 'avatars' y la actualización de la URL en BD.
+  // 4. Refresca todos los datos para que la UI refleje el cambio.
+  // ─────────────────────────────────────────────────────────────────────────
+  Future<void> _pickAndUploadAvatar() async {
+    final picker = ImagePicker();
+
+    final XFile? image = await picker.pickImage(
+      source: ImageSource.gallery,
+      imageQuality: 50,
+    );
+
+    if (image != null && mounted) {
+      // Feedback visual inmediato mientras se procesa la subida.
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Actualizando foto de perfil...')),
+      );
+
+      // Delega la subida y actualización de URL a AuthNotifier.
+      await context.read<AuthNotifier>().updateAvatar(image.path);
+
+      // Refresca todos los datos para sincronizar la UI con Supabase.
+      await _refreshData();
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // MÉTODO: _refreshData
+  // Recarga el perfil, medallas e historial desde Supabase.
+  // Se invoca desde el RefreshIndicator (pull-to-refresh) y tras
+  // actualizar el avatar para mantener la UI sincronizada con la BD.
+  // ─────────────────────────────────────────────────────────────────────────
   Future<void> _refreshData() async {
-    // Guardamos las referencias a los notifiers antes del await para
-    // evitar async gaps con BuildContext tras la operación asíncrona.
-    final authNotifier  = context.read<AuthNotifier>();
+    final authNotifier = context.read<AuthNotifier>();
     final badgeNotifier = context.read<BadgeNotifier>();
     final visitNotifier = context.read<VisitNotifier>();
+    final String? userId = authNotifier.currentUserId;
 
-    final String? userId = context.read<AuthNotifier>().currentUserId;
     if (userId != null) {
-      // Las tres llamadas son secuenciales (await): primero el perfil,
-      // luego las medallas y finalmente el historial.
       await authNotifier.fetchProfile();
       await badgeNotifier.fetchBadges(userId);
       await visitNotifier.fetchHistory(userId);
@@ -82,98 +117,194 @@ class _ProfileScreenState extends State<ProfileScreen>
 
   @override
   Widget build(BuildContext context) {
-    // context.watch suscribe el widget a cambios en AuthNotifier,
-    // BadgeNotifier y VisitNotifier. Cualquier notifyListeners() en
-    // cualquiera de los tres provoca el rebuild de este build().
-    final auth         = context.watch<AuthNotifier>();
-    final profile      = auth.profile;
+    // context.watch suscribe la pantalla a cambios en los tres notifiers.
+    final auth = context.watch<AuthNotifier>();
+    final profile = auth.profile;
     final badgeNotifier = context.watch<BadgeNotifier>();
     final visitNotifier = context.watch<VisitNotifier>();
 
-    // Los getters de ProfileModel calculan rango, nivel y progreso
-    // directamente desde xp_total sin consultas adicionales a Supabase.
-    // El operador ?? proporciona valores por defecto si profile es null.
-    final int xpTotal         = profile?.xpTotal ?? 0;
-    final int nivel           = profile?.userLevel ?? 1;
+    // Datos derivados del perfil con valores por defecto seguros.
+    final int xpTotal = profile?.xpTotal ?? 0;
+    final int nivel = profile?.userLevel ?? 1;
     final double progresoNivel = profile?.xpProgress ?? 0.0;
+    final int medallasDesbloqueadas = badgeNotifier.myBadges.length;
+    final int totalMedallas = badgeNotifier.allBadges.length;
 
     return Scaffold(
       backgroundColor: Colors.white,
-      appBar: AppBar(
-        title: const Text(
-          'Mi Perfil',
-          style: TextStyle(fontWeight: FontWeight.bold, color: AppColors.titleOrange),
-        ),
-        elevation: 0,
-        backgroundColor: Colors.white,
-        foregroundColor: AppColors.titleOrange,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.logout, color: Colors.redAccent),
-            tooltip: 'Cerrar sesión',
-            // auth.logout() limpia todos los notifiers mediante
-            // registerNotifiers() y llama a supabase.auth.signOut().
-            // El StreamBuilder de main.dart detecta el cambio de sesión
-            // y navega automáticamente a LoginScreen.
-            onPressed: () => auth.logout(),
-          ),
-        ],
-        // TabBar en el bottom del AppBar para que quede fijo en pantalla
-        // mientras el contenido de las pestañas hace scroll.
-        bottom: TabBar(
-          controller: _tabController,
-          labelColor: AppColors.primary,
-          unselectedLabelColor: AppColors.textGrey,
-          indicatorColor: AppColors.primary,
-          tabs: const [
-            Tab(icon: Icon(Icons.emoji_events_outlined), text: 'Medallas'),
-            Tab(icon: Icon(Icons.history),                text: 'Historial'),
-          ],
-        ),
-      ),
-      // Mientras profile es null (primera carga) mostramos el spinner.
-      // En cuanto AuthNotifier llama a notifyListeners() con el perfil
-      // cargado, este build() se re-ejecuta y muestra el contenido real.
       body: profile == null
+          // Muestra spinner mientras el perfil se carga por primera vez.
           ? const Center(
-              child: CircularProgressIndicator(color: Colors.orange),
+              child: CircularProgressIndicator(color: AppColors.primary),
             )
-          : RefreshIndicator(
-              color: Colors.orange,
-              onRefresh: _refreshData,
-              // NestedScrollView coordina el scroll de la cabecera con
-              // el scroll interno de cada pestaña (ListView o SingleChildScrollView).
-              // Sin él, la cabecera y el contenido harían scroll de forma
-              // independiente y la cabecera quedaría siempre visible.
-              child: NestedScrollView(
-                headerSliverBuilder: (context, innerBoxIsScrolled) => [
-                  SliverToBoxAdapter(
-                    child: Column(
+          : SafeArea(
+              child: RefreshIndicator(
+                color: AppColors.primary,
+                onRefresh: _refreshData,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Column(
                       children: [
-                        // ProfileHeader consume los getters de ProfileModel
-                        // ya calculados arriba, sin lógica de negocio en la UI.
-                        ProfileHeader(
-                          fullName:   profile.fullName,
-                          username:   profile.username,
-                          level:      nivel,
-                          rankTitle:  profile.userRank,
-                          xpProgress: progresoNivel,
-                          xpTotal:    xpTotal,
-                          avatarUrl:  profile.avatarUrl,
+
+                        // ── Cabecera: título y acceso a ajustes ──
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(20, 14, 12, 16),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text(
+                                    'Mi Perfil',
+                                    style: TextStyle(
+                                      fontSize: 30,
+                                      fontWeight: FontWeight.w300,
+                                      color: AppColors.primary,
+                                      letterSpacing: -0.5,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    'Tu pasaporte gastronómico',
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      color: Colors.grey[400],
+                                      fontWeight: FontWeight.w400,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              // Botón de ajustes que navega a EditProfileScreen.
+                              IconButton(
+                                icon: Icon(
+                                  Icons.settings_outlined,
+                                  color: Colors.grey[400],
+                                  size: 22,
+                                ),
+                                onPressed: () => Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (context) =>
+                                        const EditProfileScreen(),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
-                        const Divider(height: 1, thickness: 1),
+
+                        // ── ProfileHeader ──
+                        // Avatar interactivo, nombre, rango, barra de XP y píldora
+                        // de rango. onAvatarTap conecta con _pickAndUploadAvatar.
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 20),
+                          child: ProfileHeader(
+                            fullName: profile.fullName,
+                            username: profile.username,
+                            level: nivel,
+                            rankTitle: profile.userRank,
+                            xpProgress: progresoNivel,
+                            xpTotal: xpTotal,
+                            avatarUrl: profile.avatarUrl,
+                            onAvatarTap: _pickAndUploadAvatar,
+                          ),
+                        ),
+
+                        const SizedBox(height: 16),
+
+                        // ── Estadísticas: medallas y XP total ──
+                        // Separador superior e inferior en gris suave para
+                        // delimitar visualmente el bloque de estadísticas.
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 20),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              border: Border(
+                                top: BorderSide(
+                                    color: Colors.grey[200]!, width: 1),
+                                bottom: BorderSide(
+                                    color: Colors.grey[200]!, width: 1),
+                              ),
+                            ),
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: _buildStat(
+                                    value: '$medallasDesbloqueadas/$totalMedallas',
+                                    label: 'Medallas',
+                                  ),
+                                ),
+                                // Separador vertical entre las dos estadísticas.
+                                Container(
+                                    height: 28,
+                                    width: 1,
+                                    color: Colors.grey[200]),
+                                Expanded(
+                                  child: _buildStat(
+                                    value: '$xpTotal',
+                                    label: 'XP Total',
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+
+                        const SizedBox(height: 14),
+
+                        // ── TabBar — Medallas e Historial ──
+                        // Indicador naranja con bordes redondeados sobre fondo
+                        // gris suave — coherente con la identidad visual de la app.
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 20),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFF5F5F5),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            padding: const EdgeInsets.all(4),
+                            child: TabBar(
+                              controller: _tabController,
+                              labelColor: Colors.white,
+                              unselectedLabelColor: Colors.grey[500],
+                              labelStyle: const TextStyle(
+                                fontWeight: FontWeight.w600,
+                                fontSize: 14,
+                              ),
+                              indicator: BoxDecoration(
+                                color: AppColors.primary,
+                                borderRadius: BorderRadius.circular(9),
+                              ),
+                              indicatorSize: TabBarIndicatorSize.tab,
+                              dividerColor: Colors.transparent,
+                              labelPadding: EdgeInsets.zero,
+                              tabs: const [
+                                Tab(text: 'Medallas', height: 38),
+                                Tab(text: 'Historial', height: 38),
+                              ],
+                            ),
+                          ),
+                        ),
+
+                        const SizedBox(height: 14),
+
+                        // ── Vistas de las pestañas ──
+                        // Expanded necesario para que TabBarView ocupe
+                        // el espacio restante sin desbordar la pantalla.
+                        Expanded(
+                          child: TabBarView(
+                            controller: _tabController,
+                            children: [
+                              _buildMedallasTab(),
+                              _buildHistorialTab(visitNotifier),
+                            ],
+                          ),
+                        ),
                       ],
                     ),
-                  ),
-                ],
-                body: TabBarView(
-                  controller: _tabController,
-                  children: [
-                    // ── PESTAÑA 1: MEDALLAS ──────────────────────────────
-                    _buildMedallasTab(badgeNotifier),
-
-                    // ── PESTAÑA 2: HISTORIAL ─────────────────────────────
-                    _buildHistorialTab(visitNotifier),
                   ],
                 ),
               ),
@@ -181,49 +312,62 @@ class _ProfileScreenState extends State<ProfileScreen>
     );
   }
 
-  // ───────────────────────────────────────────────────────────────────────────
-  // PESTAÑA MEDALLAS
-  // ───────────────────────────────────────────────────────────────────────────
-
-  Widget _buildMedallasTab(BadgeNotifier badgeNotifier) {
-    return SingleChildScrollView(
-      // AlwaysScrollableScrollPhysics permite el gesto de pull-to-refresh
-      // aunque el contenido no sea suficiente para hacer scroll.
-      physics: const AlwaysScrollableScrollPhysics(),
-      child: Column(
-        children: [
-          // BadgesHeader muestra el contador de medallas desbloqueadas
-          // sobre el total del catálogo.
-          const BadgesHeader(),
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 15, vertical: 10),
-            // BadgesGrid renderiza la cuadrícula de 9 medallas.
-            // Consume BadgeNotifier internamente mediante context.watch.
-            child: BadgesGrid(),
-          ),
-          const SizedBox(height: 40),
-        ],
-      ),
+  // ─────────────────────────────────────────────────────────────────────────
+  // WIDGET: _buildStat
+  // Bloque de estadística con valor numérico destacado y etiqueta.
+  // Se usa para mostrar medallas desbloqueadas y XP total en el header.
+  // ─────────────────────────────────────────────────────────────────────────
+  Widget _buildStat({required String value, required String label}) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          value,
+          style: const TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+              color: Colors.black87),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          label,
+          style: TextStyle(fontSize: 11, color: Colors.grey[500]),
+        ),
+      ],
     );
   }
 
-  // ───────────────────────────────────────────────────────────────────────────
-  // PESTAÑA HISTORIAL
-  // ───────────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // WIDGET: _buildMedallasTab
+  // Pestaña de medallas con el grid de BadgesGrid.
+  // AlwaysScrollableScrollPhysics permite el pull-to-refresh incluso
+  // cuando el contenido no llena la pantalla completa.
+  // ─────────────────────────────────────────────────────────────────────────
+  Widget _buildMedallasTab() {
+    return SingleChildScrollView(
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: BadgesGrid(onGoToExplore: widget.onGoToExplore),
+    );
+  }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // WIDGET: _buildHistorialTab
+  // Pestaña de historial con tres estados posibles:
+  // 1. Cargando — CircularProgressIndicator mientras se obtienen las visitas.
+  // 2. Vacío — estado motivacional que anima al usuario a hacer su primer check-in.
+  // 3. Con datos — ListView de tarjetas de visita ordenadas de más reciente a más antigua.
+  // ─────────────────────────────────────────────────────────────────────────
   Widget _buildHistorialTab(VisitNotifier visitNotifier) {
-    // isProcessing true con lista vacía indica primera carga.
-    // Si la lista ya tiene datos y se está recargando, no mostramos
-    // el spinner para no ocultar el contenido existente.
+    // Estado de carga — solo se muestra si la lista está vacía
+    // para no interrumpir la visualización de visitas ya cargadas.
     if (visitNotifier.isProcessing && visitNotifier.visits.isEmpty) {
       return const Center(
-        child: CircularProgressIndicator(color: Colors.orange),
-      );
+          child: CircularProgressIndicator(color: AppColors.primary));
     }
 
+    // Estado vacío — lista motivacional con icono y texto de llamada a la acción.
     if (visitNotifier.visits.isEmpty) {
-      // ListView en lugar de Column para que RefreshIndicator detecte
-      // el gesto de pull-to-refresh también en el estado vacío.
       return ListView(
         physics: const AlwaysScrollableScrollPhysics(),
         children: [
@@ -233,19 +377,17 @@ class _ProfileScreenState extends State<ProfileScreen>
       );
     }
 
+    // Estado con datos — lista de tarjetas de visita.
     return ListView.builder(
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.all(15),
       itemCount: visitNotifier.visits.length,
-      // builder construye cada tarjeta bajo demanda, solo cuando
-      // el ítem es visible en pantalla. Más eficiente que un Column
-      // con todos los ítems construidos de una vez.
-      itemBuilder: (context, index) {
-        return _buildVisitCard(visitNotifier.visits[index]);
-      },
+      itemBuilder: (context, index) =>
+          _buildVisitCard(visitNotifier.visits[index]),
     );
   }
 
+  // Estado vacío del historial — anima al usuario a hacer su primer check-in.
   Widget _buildHistorialEmptyState() {
     return Center(
       child: Column(
@@ -262,110 +404,107 @@ class _ProfileScreenState extends State<ProfileScreen>
     );
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // WIDGET: _buildVisitCard
+  // Tarjeta de visita individual en el historial.
+  //
+  // Muestra foto de la tapa (o placeholder con icono), nombre del bar,
+  // dirección, fecha y comentario opcional. El chip de tipo de tapa usa
+  // toFriendlyName() de StringExtensions para mostrar el valor legible
+  // en lugar del record_type crudo almacenado en la BD.
+  // ─────────────────────────────────────────────────────────────────────────
   Widget _buildVisitCard(VisitModel visit) {
-    return Card(
-      // Clip.antiAlias recorta la imagen de la tarjeta con el mismo
-      // borderRadius de la Card, evitando esquinas cuadradas en la imagen.
-      clipBehavior: Clip.antiAlias,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-      elevation: 2,
-      margin: const EdgeInsets.only(bottom: 20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
         children: [
-          _buildCardImage(visit),
-          Padding(
-            padding: const EdgeInsets.all(15),
+          // Foto de la tapa o placeholder con icono según el tipo de consumo.
+          ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: visit.photoUrl != null && visit.photoUrl!.isNotEmpty
+                ? Image.network(
+                    visit.photoUrl!,
+                    width: 42,
+                    height: 42,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) =>
+                        _visitIconPlaceholder(visit.recordType),
+                  )
+                : _visitIconPlaceholder(visit.recordType),
+          ),
+          const SizedBox(width: 12),
+
+          // Datos de la visita: bar, dirección, fecha y comentario.
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Text(
-                                visit.barName,
-                                style: const TextStyle(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.bold,
-                                  color: AppColors.titleOrange,
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              // El icono de verificado solo aparece si
-                              // gpsVerified es true, es decir si el check-in
-                              // se realizó dentro del radio de 100 metros.
-                              if (visit.gpsVerified)
-                                const Icon(
-                                  Icons.verified,
-                                  color: Colors.green,
-                                  size: 18,
-                                ),
-                            ],
-                          ),
-                          const SizedBox(height: 4),
-                          Row(
-                            children: [
-                              const Icon(
-                                Icons.access_time,
-                                size: 14,
-                                color: AppColors.textGrey,
-                              ),
-                              const SizedBox(width: 5),
-                              // DateFormat del paquete intl formatea DateTime
-                              // al patrón legible dd/MM/yyyy - HH:mm.
-                              Text(
-                                DateFormat('dd/MM/yyyy - HH:mm')
-                                    .format(visit.createdAt),
-                                style: const TextStyle(
-                                  color: AppColors.textGrey,
-                                  fontSize: 13,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                    // Badge con el tipo de consumo registrado (serranito,
-                    // cerveza, etc.) en mayúsculas para destacarlo visualmente.
-                    _buildTypeBadge(visit.recordType),
-                  ],
+                Text(
+                  visit.barName,
+                  style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.titleOrange),
                 ),
-                // El comentario solo se renderiza si existe y no está vacío.
-                // El operador spread ... inserta los widgets de la lista
-                // directamente dentro del Column padre.
+                const SizedBox(height: 2),
+                // Dirección con fallback si no está disponible en la BD.
+                Text(
+                  (visit.barAddress != null && visit.barAddress!.isNotEmpty)
+                      ? visit.barAddress!
+                      : 'Ubicación no disponible',
+                  style: TextStyle(fontSize: 11, color: Colors.grey[400]),
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 2),
+                // Fecha formateada con Intl en formato español.
+                Text(
+                  DateFormat('dd/MM/yyyy · HH:mm').format(visit.createdAt),
+                  style: TextStyle(fontSize: 11, color: Colors.grey[400]),
+                ),
+                // Comentario opcional — solo visible si el usuario lo escribió.
                 if (visit.comment != null && visit.comment!.isNotEmpty) ...[
-                  const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 8.0),
-                    child: Divider(height: 1),
-                  ),
-                  Row(
-                    children: [
-                      const Icon(
-                        Icons.chat_bubble_outline,
-                        size: 16,
-                        color: Colors.orange,
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          visit.comment!,
-                          style: TextStyle(
-                            fontStyle: FontStyle.italic,
-                            color: AppColors.subtitleOrange,
-                          ),
-                        ),
-                      ),
-                    ],
+                  const SizedBox(height: 3),
+                  Text(
+                    visit.comment!,
+                    style: TextStyle(
+                        fontSize: 11,
+                        color: AppColors.subtitleOrange,
+                        fontStyle: FontStyle.italic),
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ],
               ],
+            ),
+          ),
+          const SizedBox(width: 8),
+
+          // Chip de tipo de tapa — toFriendlyName() convierte el
+          // record_type de la BD en un nombre legible para el usuario.
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: Colors.orange[50],
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: Colors.orange[200]!, width: 1),
+            ),
+            child: Text(
+              visit.recordType.toFriendlyName(),
+              style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.orange[700]),
             ),
           ),
         ],
@@ -373,87 +512,40 @@ class _ProfileScreenState extends State<ProfileScreen>
     );
   }
 
-  Widget _buildCardImage(VisitModel visit) {
-    if (visit.photoUrl != null && visit.photoUrl!.isNotEmpty) {
-      return Image.network(
-        visit.photoUrl!,
-        height: 160,
-        width: double.infinity,
-        fit: BoxFit.cover,
-        // loadingBuilder muestra un placeholder mientras la imagen
-        // se descarga. progress == null indica que la carga terminó.
-        loadingBuilder: (context, child, progress) {
-          if (progress == null) return child;
-          return Container(
-            height: 160,
-            color: Colors.orange[50],
-            child: const Center(
-              child: CircularProgressIndicator(
-                color: Colors.orange,
-                strokeWidth: 2,
-              ),
-            ),
-          );
-        },
-        // errorBuilder se activa si la URL es inválida o la descarga falla.
-        // Muestra el icono del tipo de tapa como fallback visual.
-        errorBuilder: (context, error, stackTrace) => Container(
-          height: 100,
-          width: double.infinity,
-          color: Colors.orange[50],
-          child: Icon(
-            _getIconForType(visit.recordType),
-            size: 40,
-            color: Colors.orange,
-          ),
-        ),
-      );
-    }
-    // Si photoUrl es null muestra directamente el icono del tipo de tapa.
+  // ─────────────────────────────────────────────────────────────────────────
+  // WIDGET: _visitIconPlaceholder
+  // Placeholder cuadrado con icono representativo del tipo de consumo.
+  // Se muestra cuando la visita no tiene foto o la carga falla.
+  // El icono se obtiene mediante _getIconForType() según el record_type.
+  // ─────────────────────────────────────────────────────────────────────────
+  Widget _visitIconPlaceholder(String recordType) {
     return Container(
-      height: 100,
-      width: double.infinity,
-      color: Colors.orange[50],
-      child: Icon(
-        _getIconForType(visit.recordType),
-        size: 40,
-        color: Colors.orange,
-      ),
-    );
-  }
-
-  Widget _buildTypeBadge(String type) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      width: 42,
+      height: 42,
       decoration: BoxDecoration(
-        color: Colors.orange[100],
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Text(
-        type.toUpperCase(),
-        style: TextStyle(
-          color: Colors.orange[900],
-          fontSize: 10,
-          fontWeight: FontWeight.bold,
-        ),
+          color: Colors.orange[50], borderRadius: BorderRadius.circular(10)),
+      child: Icon(
+        _getIconForType(recordType),
+        color: AppColors.primary,
+        size: 20,
       ),
     );
   }
 
-  // Switch que mapea cada valor de record_type al icono más representativo.
-  // El caso default cubre 'generic' y cualquier valor no contemplado.
+  // Devuelve el icono de Material Design correspondiente a cada tipo de consumo.
+  // El switch cubre los cinco tipos definidos en el catálogo de medallas.
   IconData _getIconForType(String type) {
-    switch (type) {
+    switch (type.toLowerCase()) {
       case 'serranito':
-        return Icons.bakery_dining;
+        return Icons.lunch_dining;
       case 'cerveza':
         return Icons.local_bar;
       case 'vino':
         return Icons.wine_bar;
       case 'croquetas':
-        return Icons.circle;
+        return Icons.tapas;
       case 'solomillo_whisky':
-        return Icons.restaurant;
+        return Icons.kebab_dining;
       default:
         return Icons.restaurant_menu;
     }

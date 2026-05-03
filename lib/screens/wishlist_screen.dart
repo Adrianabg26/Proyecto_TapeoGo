@@ -1,21 +1,30 @@
 /// wishlist_screen.dart
 ///
-/// Pantalla que muestra la lista de establecimientos marcados como
-/// pendientes por el usuario. Al ser pestaña del IndexedStack de MainScreen,
-/// usa initState para cargar los datos al inicializarse.
+/// Pantalla que muestra los establecimientos marcados como pendientes.
+///
+/// Al ser pestaña del IndexedStack de MainScreen, carga los datos en
+/// initState mediante addPostFrameCallback para garantizar que el árbol
+/// de widgets está construido antes de la primera petición a Supabase.
+///
+/// Gestiona tres estados visuales:
+///   - Carga: shimmer con la misma estructura que las tarjetas reales.
+///   - Vacío: mensaje motivacional con botón para ir al mapa.
+///   - Con datos: lista de tarjetas con acciones de ver y eliminar.
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../notifiers/wishlist_notifier.dart';
 import '../notifiers/auth_notifier.dart';
 import '../widgets/bar_image.dart';
+import '../widgets/shimmer_placeholder.dart';
 import '../utils/app_colors.dart';
+import '../models/bar_model.dart';
+import 'bar_details_screen.dart';
+import '../main.dart';
 
-// StatefulWidget porque necesita initState para lanzar la carga de datos
-// al montarse como pestaña dentro del IndexedStack de MainScreen.
-// Si fuera StatelessWidget no tendría ciclo de vida para hacer esto.
 class WishlistScreen extends StatefulWidget {
-  const WishlistScreen({super.key});
+  final VoidCallback onGoToExplore;
+  const WishlistScreen({super.key, required this.onGoToExplore});
 
   @override
   State<WishlistScreen> createState() => _WishlistScreenState();
@@ -26,26 +35,19 @@ class _WishlistScreenState extends State<WishlistScreen> {
   @override
   void initState() {
     super.initState();
-    // addPostFrameCallback garantiza que el árbol de widgets está completamente
-    // construido antes de ejecutar el código asíncrono. Sin esto, llamar a
-    // context.read dentro de initState podría lanzar un error porque el
-    // BuildContext aún no está listo para acceder a los Providers.
+    // addPostFrameCallback garantiza que el árbol de widgets está construido
+    // antes de solicitar datos al notifier desde el context.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      // context.read se usa aquí (no context.watch) porque solo necesitamos
-      // leer el valor una vez, no suscribirnos a cambios.
       final String? userId = context.read<AuthNotifier>().currentUserId;
       if (userId != null) {
-        // Dispara la carga de la lista de pendientes desde Supabase.
-        // WishlistNotifier llama a notifyListeners() al terminar,
-        // lo que provoca el rebuild del widget que sí usa context.watch.
         context.read<WishlistNotifier>().fetchWishlist(userId);
       }
     });
   }
 
-  // Método llamado por RefreshIndicator cuando el usuario arrastra hacia abajo.
-  // Es async porque espera a que fetchWishlist complete antes de ocultar
-  // el indicador de recarga.
+  // Recarga la wishlist desde Supabase.
+  // Devuelve Future para que RefreshIndicator muestre la animación
+  // mientras la operación está en curso.
   Future<void> _refreshData() async {
     final String? userId = context.read<AuthNotifier>().currentUserId;
     if (userId != null) {
@@ -53,155 +55,376 @@ class _WishlistScreenState extends State<WishlistScreen> {
     }
   }
 
+  // ───────────────────────────────────────────────────────────────────────────
+  // MÉTODO: _removeWithUndo
+  // Elimina el bar de pendientes y muestra un SnackBar con "Deshacer".
+  // Patrón de acción reversible — el usuario tiene 4 segundos para
+  // recuperar el bar antes de que la eliminación sea definitiva.
+  //
+  // Se usa scaffoldMessengerKey.currentState en lugar de
+  // ScaffoldMessenger.of(context) para evitar conflictos con el
+  // IndexedStack de MainScreen que mantiene todas las pantallas en memoria.
+  // ───────────────────────────────────────────────────────────────────────────
+
+ void _removeWithUndo(
+    BuildContext context,
+    WishlistNotifier notifier,
+    String userId,
+    BarModel bar,
+  ) {
+    // 1. Ejecutamos la lógica de datos
+    notifier.removeFromWishlist(userId, bar);
+
+    // 2. OBTENEMOS EL MENSAJERO LOCAL (Fundamental)
+    // Usar .of(context) asegura que el SnackBar se vincule al Ticker (reloj) 
+    // de la pantalla actual.
+    final messenger = ScaffoldMessenger.of(context); 
+
+    // 3. LIMPIEZA PREVENTIVA
+    // hideCurrentSnackBar() detiene cualquier temporizador previo de forma limpia.
+    messenger.hideCurrentSnackBar(); 
+
+    // 4. LANZAMOS EL MENSAJE
+    messenger.showSnackBar(
+      SnackBar(
+        // UniqueKey fuerza a Flutter a crear un Timer totalmente nuevo
+        key: UniqueKey(), 
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        duration: const Duration(seconds: 6), 
+        backgroundColor: Colors.grey[900],
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(12),
+        ),
+        content: Row(
+          children: [
+            const Icon(Icons.bookmark_remove_rounded, color: Colors.white70, size: 18),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                '${bar.name} ha sido eliminado de Pendientes',
+                style: const TextStyle(color: Colors.white, fontSize: 13),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+        action: SnackBarAction(
+          label: 'Deshacer',
+          textColor: AppColors.primary,
+          onPressed: () => notifier.addToWishlist(userId, bar),
+        ),
+      ),
+    );
+    Future.delayed(const Duration(seconds: 5), () {
+  // Verificamos que el mensajero siga existiendo para evitar errores
+  messenger.hideCurrentSnackBar();
+});
+  }
+
   @override
   Widget build(BuildContext context) {
-    // context.watch suscribe este widget a los cambios de WishlistNotifier.
-    // Cada vez que WishlistNotifier llama a notifyListeners(), este build
-    // se re-ejecuta automáticamente con los datos actualizados.
+    // context.watch suscribe este widget a WishlistNotifier.
+    // Cuando cambia la lista de pendientes la pantalla se reconstruye.
     final wishlistNotifier = context.watch<WishlistNotifier>();
-
-    // context.read aquí (sin watch) porque el userId no cambia durante
-    // el uso normal de la pantalla y no necesitamos reaccionar a cambios de Auth.
     final String? userId = context.read<AuthNotifier>().user?.id;
-
-    // wishlistBars es la lista de BarModel que devuelve el notifier.
-    // Se actualiza cada vez que fetchWishlist o removeFromWishlist terminan.
     final wishlist = wishlistNotifier.wishlistBars;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text(
-          'Mis Pendientes',
-          style: TextStyle(
-            fontWeight: FontWeight.bold,
-            color: AppColors.titleOrange,  // Color del sistema de diseño AppColors
+      backgroundColor: Colors.white,
+      body: SafeArea(
+        child: RefreshIndicator(
+          color: AppColors.primary,
+          onRefresh: _refreshData,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildHeader(),
+              Expanded(
+                child: _buildBody(
+                    context, wishlistNotifier, wishlist, userId),
+              ),
+            ],
           ),
         ),
-        backgroundColor: Colors.orange[50],
-        elevation: 0,        // Sin sombra para estilo flat
-        centerTitle: true,
-      ),
-      // RefreshIndicator envuelve el body completo para que el gesto de
-      // arrastrar hacia abajo (pull-to-refresh) funcione en cualquier
-      // punto de la pantalla, incluyendo el estado vacío.
-      body: RefreshIndicator(
-        color: Colors.orange,
-        onRefresh: _refreshData,
-        child: _buildBody(context, wishlistNotifier, wishlist, userId),
       ),
     );
   }
 
-  // Separamos la lógica de construcción del body en un método privado
-  // para mantener el método build limpio y legible.
-  // Recibe los datos ya extraídos para no repetir context.watch/read aquí.
+  // Cabecera con título y subtítulo — mismo patrón que el resto de pestañas.
+  Widget _buildHeader() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 14, 20, 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Pendientes',
+            style: TextStyle(
+              fontSize: 30,
+              fontWeight: FontWeight.w300,
+              color: AppColors.primary,
+              letterSpacing: -0.5,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            'Bares que quieres visitar',
+            style: TextStyle(
+              fontSize: 13,
+              color: Colors.grey[400],
+              fontWeight: FontWeight.w400,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Gestiona los tres estados posibles de la pantalla.
   Widget _buildBody(
     BuildContext context,
     WishlistNotifier wishlistNotifier,
     List wishlist,
     String? userId,
   ) {
-    // Estado de carga: WishlistNotifier expone isLoading = true mientras
-    // fetchWishlist está ejecutándose. Muestra spinner mientras espera.
+    // Estado de carga: shimmer con la misma estructura que las tarjetas reales.
     if (wishlistNotifier.isLoading) {
-      return const Center(
-        child: CircularProgressIndicator(color: Colors.orange),
+      return ListView.builder(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        itemCount: 4,
+        itemBuilder: (context, index) => Container(
+          margin: const EdgeInsets.only(bottom: 10),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: Colors.grey.shade100),
+          ),
+          child: Row(
+            children: [
+              ClipRRect(
+                borderRadius: const BorderRadius.horizontal(
+                    left: Radius.circular(14)),
+                child: ShimmerPlaceholder.rectangular(
+                    width: 90, height: 90),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      ShimmerPlaceholder.rectangular(height: 13),
+                      const SizedBox(height: 8),
+                      ShimmerPlaceholder.rectangular(
+                          width: 90, height: 10),
+                      const SizedBox(height: 10),
+                      ShimmerPlaceholder.rectangular(
+                          width: 70, height: 10),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+            ],
+          ),
+        ),
       );
     }
 
-    // Estado vacío: la lista existe pero no tiene elementos.
-    // Se usa ListView (no Column) para que RefreshIndicator funcione
-    // también en el estado vacío. Sin ListView, el gesto de pull-to-refresh
-    // no tiene superficie de scroll donde detectarse.
+    // Estado vacío: ListView para que RefreshIndicator siga funcionando.
     if (wishlist.isEmpty) {
       return ListView(
-        physics: const AlwaysScrollableScrollPhysics(), // Permite scroll aunque no haya contenido
+        physics: const AlwaysScrollableScrollPhysics(),
         children: [
-          SizedBox(height: MediaQuery.of(context).size.height * 0.2), // Centra visualmente el mensaje
+          SizedBox(height: MediaQuery.of(context).size.height * 0.12),
           _buildEmptyState(),
         ],
       );
     }
 
-    // Estado con datos: lista de bares pendientes.
-    return ListView.separated(
-      physics: const AlwaysScrollableScrollPhysics(), // Necesario para que RefreshIndicator funcione
-      padding: const EdgeInsets.all(16),
+    // Estado con datos: lista de tarjetas.
+    return ListView.builder(
+      physics: const AlwaysScrollableScrollPhysics(),
+      padding: const EdgeInsets.symmetric(horizontal: 16),
       itemCount: wishlist.length,
-      // separatorBuilder añade un Divider entre ítems, no después del último.
-      separatorBuilder: (context, index) => const Divider(),
       itemBuilder: (context, index) {
-        final bar = wishlist[index]; // BarModel con los datos del establecimiento
-
-        return Padding(
-          padding: const EdgeInsets.symmetric(vertical: 8.0),
-          child: Row(
-            children: [
-              // Widget reutilizable que gestiona la carga de la imagen
-              // con estado de loading, error y placeholder naranja.
-              BarImage(url: bar.mainImageUrl, size: 70),
-              const SizedBox(width: 15),
-              // Expanded para que el texto ocupe el espacio disponible
-              // sin desplazar el IconButton a la derecha.
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      bar.name,
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        color: AppColors.titleOrange,
-                      ),
-                    ),
-                    Text(
-                      bar.district, // Barrio del establecimiento
-                      style: const TextStyle(
-                        color: AppColors.subtitleOrange,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              // Botón para eliminar el bar de la lista de pendientes.
-              // Si userId es null (no debería ocurrir, la pantalla requiere sesión)
-              // se deshabilita el botón con onPressed: null.
-              // removeFromWishlist llama a notifyListeners() al terminar,
-              // lo que provoca el rebuild y el bar desaparece de la lista.
-              IconButton(
-                icon: const Icon(Icons.bookmark_remove, color: Colors.grey),
-                onPressed: userId == null
-                    ? null
-                    : () => wishlistNotifier.removeFromWishlist(userId, bar),
-              ),
-            ],
-          ),
-        );
+        final bar = wishlist[index] as BarModel;
+        return _buildBarCard(context, wishlistNotifier, bar, userId);
       },
     );
   }
 
-  // Estado vacío con mensaje motivacional.
-  // Separado en método privado para mantener _buildBody legible.
+  // ───────────────────────────────────────────────────────────────────────────
+  // WIDGET: _buildBarCard
+  // Tarjeta horizontal con imagen, nombre, dirección, botón de detalles
+  // e icono para eliminar con opción de deshacer.
+  // Diseño idéntico a FavoritesScreen para garantizar consistencia visual.
+  // ───────────────────────────────────────────────────────────────────────────
+
+  Widget _buildBarCard(
+    BuildContext context,
+    WishlistNotifier wishlistNotifier,
+    BarModel bar,
+    String? userId,
+  ) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.grey.shade100),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          // Imagen del bar mediante el widget reutilizable BarImage.
+          ClipRRect(
+            borderRadius: const BorderRadius.horizontal(
+                left: Radius.circular(14)),
+            child: BarImage(url: bar.mainImageUrl, size: 90),
+          ),
+
+          // Nombre, dirección y botón de acción.
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 12, vertical: 10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    bar.name,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                      color: AppColors.titleOrange,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  // Dirección física en lugar del distrito para facilitar
+                  // que el usuario localice el bar cuando quiera visitarlo.
+                  Row(
+                    children: [
+                      const Icon(Icons.place_rounded,
+                          size: 12, color: Colors.grey),
+                      const SizedBox(width: 3),
+                      Expanded(
+                        child: Text(
+                          bar.address,
+                          style: TextStyle(
+                              fontSize: 12, color: Colors.grey[500]),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+
+                  // Botón "Ver detalles" con ElevatedButton para mantener
+                  // coherencia con el resto de botones de acción de la app.
+                  SizedBox(
+                    child: ElevatedButton(
+                      onPressed: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => BarDetailsScreen(bar: bar),
+                        ),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.primary,
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 5),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      child: const Text(
+                        'Ver detalles',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          // Icono bookmark para eliminar el bar de pendientes.
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: IconButton(
+              icon: const Icon(
+                Icons.bookmark_rounded,
+                color: AppColors.primary,
+              ),
+              onPressed: userId == null
+                  ? null
+                  : () => _removeWithUndo(
+                      context, wishlistNotifier, userId, bar),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Estado vacío con mensaje motivacional y botón para ir al mapa.
   Widget _buildEmptyState() {
     return Center(
       child: Column(
         children: [
-          // Icono decorativo con color muy suave para no distraer
-          Icon(Icons.restaurant_menu, size: 80, color: Colors.orange[100]),
+          Icon(Icons.bookmark_outline_rounded,
+              size: 72, color: Colors.grey[300]),
           const SizedBox(height: 16),
           const Text(
-            '¿No tienes hambre?',
+            '¡Nada por aquí todavía!',
             style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-              color: AppColors.titleOrange,
+              fontSize: 17,
+              fontWeight: FontWeight.w600,
+              color: Colors.black87,
             ),
           ),
-          const Text(
-            'Añade bares a tu lista de pendientes.',
-            style: TextStyle(color: AppColors.textGrey),
+          const SizedBox(height: 6),
+          Text(
+            'Guarda los bares que quieras visitar\ny tenlos siempre a mano.',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+                color: Colors.grey[400], fontSize: 13, height: 1.5),
+          ),
+          const SizedBox(height: 28),
+          ElevatedButton.icon(
+            onPressed: widget.onGoToExplore,
+            icon: const Icon(Icons.map_outlined,
+                size: 18, color: Colors.white),
+            label: const Text(
+              'Explorar bares',
+              style: TextStyle(
+                  color: Colors.white, fontWeight: FontWeight.w600),
+            ),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              elevation: 0,
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 28, vertical: 13),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(22),
+              ),
+            ),
           ),
         ],
       ),

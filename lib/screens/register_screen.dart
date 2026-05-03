@@ -1,23 +1,23 @@
 /// register_screen.dart
 ///
 /// Pantalla de registro de nuevos usuarios en TapeoGo.
-/// Permite crear una cuenta mediante email, contraseña, nombre de usuario
-/// y nombre completo a través de AuthNotifier, que delega la operación
-/// a Supabase Auth.
 ///
-/// Tras el registro exitoso, Supabase envía un email de confirmación.
-/// El StreamBuilder de main.dart gestiona la navegación automáticamente
-/// cuando la sesión queda activa.
+/// Recoge email, contraseña, nombre de usuario y nombre completo,
+/// valida los campos localmente y delega el registro a AuthNotifier,
+/// que internamente usa Supabase Auth.
+///
+/// La navegación post-registro no se gestiona manualmente aquí.
+/// Cuando Supabase confirma la sesión, el StreamBuilder de main.dart
+/// redirige automáticamente a MainScreen — patrón "Portero Automatizado".
+///
+/// Gestión de errores: AuthNotifier propaga las excepciones con rethrow
+/// y _handleRegister las captura en el bloque catch para mostrar el SnackBar.
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../notifiers/auth_notifier.dart';
 import '../utils/app_colors.dart';
 
-// StatefulWidget porque necesita:
-// 1. TextEditingController para cada campo de texto (requieren dispose)
-// 2. _isLoading para alternar el estado del botón durante el registro
-// Si fuera StatelessWidget no podría gestionar ninguno de estos dos estados.
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
 
@@ -26,25 +26,21 @@ class RegisterScreen extends StatefulWidget {
 }
 
 class _RegisterScreenState extends State<RegisterScreen> {
-  // Un TextEditingController por cada campo de texto.
-  // Permiten leer el valor actual del campo con .text y limpiarlo con .clear().
-  // Se declaran aquí (no en build) para que persistan entre rebuilds del widget.
+  // Un TextEditingController por campo. Se declaran como atributos del State
+  // (no dentro de build) para que persistan entre reconstrucciones del widget.
   final _emailController    = TextEditingController();
   final _passwordController = TextEditingController();
   final _usernameController = TextEditingController();
   final _fullNameController = TextEditingController();
 
-  // Estado local del botón: true mientras la petición a Supabase está en curso.
-  // Deshabilita el botón y muestra el spinner para evitar envíos duplicados.
+  // _isLoading bloquea el botón durante el registro para evitar
+  // envíos duplicados si el usuario pulsa varias veces.
   bool _isLoading = false;
 
   @override
   void dispose() {
-    // CRÍTICO: liberar todos los controladores cuando el widget se destruye.
-    // Cada TextEditingController mantiene un listener interno que consume
-    // memoria. Sin dispose() se producen fugas de memoria y warnings de Flutter.
-    // El orden es indiferente entre controladores, pero dispose() siempre
-    // debe llamarse antes de super.dispose().
+    // Obligatorio liberar todos los controladores en dispose() para evitar
+    // fugas de memoria — cada uno mantiene listeners internos activos.
     _emailController.dispose();
     _passwordController.dispose();
     _usernameController.dispose();
@@ -54,144 +50,159 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   // ───────────────────────────────────────────────────────────────────────────
   // MÉTODO: _handleRegister
-  // Valida los campos localmente antes de enviar la petición a Supabase.
-  // Delega el registro a AuthNotifier para mantener la separación entre
-  // la UI y la lógica de negocio.
+  // Valida los campos localmente antes de llamar a Supabase para evitar
+  // peticiones de red innecesarias con datos incompletos o inválidos.
+  // Las excepciones de AuthNotifier se capturan aquí y se muestran
+  // como SnackBar de error al usuario.
   // ───────────────────────────────────────────────────────────────────────────
 
   Future<void> _handleRegister() async {
-    // Validación local ANTES de llamar a Supabase para ahorrar una petición
-    // de red innecesaria. .trim() elimina espacios en blanco al inicio y al
-    // final, evitando que un usuario con solo espacios pase la validación.
+    // Validación 1 — campos vacíos.
+    // trim() elimina espacios en blanco accidentales al inicio y al final.
     if (_emailController.text.trim().isEmpty ||
         _passwordController.text.isEmpty ||
         _usernameController.text.trim().isEmpty ||
         _fullNameController.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Por favor, rellena todos los campos'),
-          backgroundColor: Colors.redAccent,
-          // floating eleva el SnackBar sobre el contenido en lugar de
-          // pegarlo al borde inferior, más visible en móvil.
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-      return; // Salida temprana: no continuar si la validación falla
-    }
-
-    // Validación de longitud mínima de contraseña (requisito de Supabase Auth).
-    // Se comprueba aquí para dar feedback inmediato sin esperar la respuesta
-    // del servidor, que devolvería un error menos descriptivo para el usuario.
-    if (_passwordController.text.length < 6) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('La contraseña debe tener al menos 6 caracteres'),
-          backgroundColor: Colors.redAccent,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
+      _showErrorSnackBar('Por favor, rellena todos los campos');
       return;
     }
 
-    // Activar estado de carga: deshabilita el botón y muestra el spinner.
-    // setState() provoca un rebuild que renderiza el CircularProgressIndicator
-    // en lugar del texto del botón.
+    // Validación 2 — longitud mínima de contraseña.
+    // Supabase Auth requiere mínimo 6 caracteres. Se valida aquí para
+    // dar feedback inmediato sin esperar la respuesta del servidor.
+    if (_passwordController.text.length < 6) {
+      _showErrorSnackBar(
+          'La contraseña debe tener al menos 6 caracteres');
+      return;
+    }
+
     setState(() => _isLoading = true);
 
     try {
-      // context.read (no watch) porque solo necesitamos llamar al método,
-      // no suscribirnos a cambios del notifier desde aquí.
-      // Los parámetros van con .trim() para limpiar espacios accidentales
-      // antes de enviarlos a Supabase.
-      // La contraseña no lleva .trim() porque los espacios podrían ser
-      // intencionados y parte de la contraseña elegida por el usuario.
+      // context.read en lugar de watch porque solo necesitamos llamar
+      // al método, no suscribirnos a cambios del notifier.
+      // La contraseña no lleva trim() porque los espacios pueden ser
+      // parte intencional de la contraseña elegida por el usuario.
       await context.read<AuthNotifier>().register(
-            email:    _emailController.text.trim(),
+            email: _emailController.text.trim(),
             password: _passwordController.text,
             username: _usernameController.text.trim(),
             fullName: _fullNameController.text.trim(),
           );
 
-      // mounted comprueba que el widget sigue en el árbol antes de usar
-      // el context. Es necesario después de cualquier await porque el widget
-      // podría haberse destruido mientras esperábamos la respuesta de Supabase.
-      // Sin esta comprobación, showSnackBar lanzaría un error si el usuario
-      // navegó a otra pantalla durante el registro.
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Cuenta creada. Revisa tu email para confirmar.'),
-            backgroundColor: Colors.green,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-        // NOTA: no hay Navigator.push() aquí. La navegación a MainScreen
-        // la gestiona automáticamente el StreamBuilder de main.dart cuando
-        // Supabase Auth emite el evento de sesión activa tras la confirmación
-        // del email. Esto evita duplicar la lógica de navegación.
-      }
-    } catch (e) {
-      // Captura cualquier excepción lanzada por AuthNotifier.register().
-      // Supabase lanza excepciones con mensajes descriptivos (email ya
-      // registrado, contraseña débil, etc.) que se muestran directamente
-      // al usuario con e.toString().
-      if (mounted) {
+        // SnackBar de éxito en verde suave — coherente con el resto de la app.
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(e.toString()),
-            backgroundColor: Colors.redAccent,
             behavior: SnackBarBehavior.floating,
+            margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            backgroundColor: const Color(0xFFF0FFF4),
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12)),
+            content: Row(
+              children: [
+                Container(
+                  width: 32, height: 32,
+                  decoration: const BoxDecoration(
+                      color: Color(0xFFDCFCE7), shape: BoxShape.circle),
+                  child: const Icon(Icons.check_rounded,
+                      color: Color(0xFF16A34A), size: 18),
+                ),
+                const SizedBox(width: 10),
+                const Expanded(
+                  child: Text(
+                    'Cuenta creada. Revisa tu email para confirmar.',
+                    style: TextStyle(
+                        color: Color(0xFF166534), fontSize: 13),
+                  ),
+                ),
+              ],
+            ),
           ),
         );
+        // No navegamos manualmente — el StreamBuilder de main.dart detecta
+        // el cambio de sesión y redirige automáticamente.
+      }
+    } catch (e) {
+      if (mounted) {
+        _showErrorSnackBar(e.toString().replaceFirst('Exception: ', ''));
       }
     } finally {
-      // finally se ejecuta SIEMPRE: tanto si el try tuvo éxito como si
-      // lanzó una excepción. Garantiza que _isLoading vuelva a false y
-      // el botón quede habilitado en cualquier escenario.
-      // Sin el finally, un error en el try dejaría el botón deshabilitado
-      // permanentemente hasta que el usuario saliera de la pantalla.
+      // finally garantiza que _isLoading vuelve a false tanto si el
+      // registro fue exitoso como si falló.
       if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  // SnackBar de error reutilizable — evita repetir el mismo bloque
+  // en cada validación. Coherente con el estilo del resto de la app.
+  void _showErrorSnackBar(String mensaje) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        backgroundColor: const Color(0xFFFFF0F0),
+        shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12)),
+        content: Row(
+          children: [
+            Container(
+              width: 32, height: 32,
+              decoration: const BoxDecoration(
+                  color: Color(0xFFFFE0E0), shape: BoxShape.circle),
+              child: const Icon(Icons.error_outline_rounded,
+                  color: Color(0xFFE53935), size: 18),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(mensaje,
+                  style: const TextStyle(
+                      color: Color(0xFFC62828), fontSize: 13)),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.white,
+      // AppBar blanco con título naranja — coherente con el resto de
+      // pantallas secundarias de la app (check_in, edit_profile).
       appBar: AppBar(
         backgroundColor: Colors.white,
-        elevation: 0,          // Sin sombra para estilo flat coherente con el resto
-        foregroundColor: AppColors.titleOrange, // Color del botón de retroceso
+        elevation: 0,
+        centerTitle: true,
+        iconTheme: const IconThemeData(color: AppColors.primary),
         title: const Text(
           'Crear cuenta',
           style: TextStyle(
-            fontWeight: FontWeight.bold,
-            color: AppColors.titleOrange,
+            fontWeight: FontWeight.w600,
+            color: AppColors.primary,
+            fontSize: 16,
           ),
         ),
       ),
       body: Center(
-        // SingleChildScrollView permite que el formulario sea desplazable
-        // cuando el teclado virtual sube y reduce el espacio disponible.
-        // Sin él, los campos inferiores quedarían ocultos bajo el teclado.
+        // SingleChildScrollView permite desplazar el formulario cuando
+        // el teclado virtual sube y reduce el espacio disponible.
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(30),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              // Logo a tamaño reducido (120) respecto a SplashScreen (220)
-              // porque aquí comparte espacio con el formulario.
               Image.asset(
-                'assets/logoconletra.png',
+                'assets/images/logoconletra.png',
                 height: 120,
                 fit: BoxFit.contain,
               ),
               const SizedBox(height: 30),
 
-              // Los cuatro campos usan _buildTextField para garantizar
-              // consistencia visual entre sí y con LoginScreen.
-              // El orden nombre completo → usuario → email → contraseña
-              // sigue el flujo natural de creación de cuenta.
+              // Campos en orden: nombre completo → usuario → email → contraseña.
+              // Todos usan _buildTextField para garantizar coherencia visual
+              // con LoginScreen — principio DRY.
               _buildTextField(
                 controller: _fullNameController,
                 label: 'Nombre completo',
@@ -206,8 +217,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
               ),
               const SizedBox(height: 16),
 
-              // keyboardType: emailAddress muestra el teclado optimizado
-              // para emails (con @ visible sin cambiar de teclado).
               _buildTextField(
                 controller: _emailController,
                 label: 'Correo electrónico',
@@ -216,8 +225,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
               ),
               const SizedBox(height: 16),
 
-              // isPassword: true activa obscureText en el campo,
-              // que oculta los caracteres con puntos mientras el usuario escribe.
               _buildTextField(
                 controller: _passwordController,
                 label: 'Contraseña',
@@ -226,28 +233,19 @@ class _RegisterScreenState extends State<RegisterScreen> {
               ),
               const SizedBox(height: 35),
 
-              // SizedBox con width: double.infinity hace que el botón
-              // ocupe todo el ancho disponible independientemente del
-              // tamaño del texto que contenga.
+              // Botón de registro. Se deshabilita durante la petición
+              // mostrando un spinner en lugar del texto.
               SizedBox(
                 width: double.infinity,
                 height: 55,
                 child: ElevatedButton(
-                  // onPressed: null deshabilita el botón durante la carga.
-                  // Flutter aplica automáticamente el estilo "deshabilitado"
-                  // (color grisado) cuando onPressed es null.
                   onPressed: _isLoading ? null : _handleRegister,
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.orange,
+                    backgroundColor: AppColors.primary,
                     elevation: 0,
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(15),
-                    ),
+                        borderRadius: BorderRadius.circular(15)),
                   ),
-                  // Operador ternario que alterna entre spinner y texto
-                  // según el estado de _isLoading. El spinner está acotado
-                  // por el SizedBox del botón (height: 55) por lo que
-                  // no necesita su propio SizedBox para no desbordarse.
                   child: _isLoading
                       ? const CircularProgressIndicator(color: Colors.white)
                       : const Text(
@@ -263,15 +261,14 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
               const SizedBox(height: 20),
 
-              // Navigator.pop() devuelve a LoginScreen sin añadir una nueva
-              // ruta a la pila de navegación. Es la forma correcta de
-              // "volver atrás" en Flutter, equivalente al botón de retroceso.
+              // Navigator.pop() vuelve a LoginScreen sin añadir una nueva
+              // ruta a la pila — equivalente al botón de retroceso del dispositivo.
               TextButton(
                 onPressed: () => Navigator.pop(context),
                 child: const Text(
                   '¿Ya tienes cuenta? Inicia sesión',
                   style: TextStyle(
-                    color: Colors.orange,
+                    color: AppColors.primary,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
@@ -285,41 +282,32 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   // ───────────────────────────────────────────────────────────────────────────
   // WIDGET AUXILIAR: _buildTextField
-  // Centraliza la construcción de campos de texto para mantener
-  // consistencia visual con LoginScreen.
+  // Campo de texto reutilizable con decoración coherente con LoginScreen.
+  // Centralizar la decoración en un único método garantiza que cualquier
+  // cambio de estilo se aplique a todos los campos simultáneamente.
   // ───────────────────────────────────────────────────────────────────────────
 
   Widget _buildTextField({
     required TextEditingController controller,
     required String label,
     required IconData icon,
-    // Valores por defecto para los parámetros opcionales:
-    // la mayoría de campos no son contraseña y usan teclado de texto normal.
     bool isPassword = false,
     TextInputType keyboardType = TextInputType.text,
   }) {
     return TextField(
       controller: controller,
-      // obscureText oculta el texto cuando isPassword es true.
-      // Solo activo en el campo de contraseña.
       obscureText: isPassword,
-      // keyboardType adapta el teclado al tipo de dato esperado.
-      // emailAddress muestra el @ en el teclado principal.
       keyboardType: keyboardType,
       decoration: InputDecoration(
         labelText: label,
-        // prefixIcon añade el icono dentro del campo a la izquierda,
-        // alineado verticalmente con el texto.
-        prefixIcon: Icon(icon, color: Colors.orange),
+        prefixIcon: Icon(icon, color: AppColors.primary),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(15),
         ),
-        // focusedBorder sobreescribe el borde por defecto cuando el campo
-        // está activo (usuario escribiendo), dándole el color naranja
-        // corporativo y un borde más grueso para indicar el foco activo.
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(15),
-          borderSide: const BorderSide(color: Colors.orange, width: 2),
+          borderSide:
+              const BorderSide(color: AppColors.primary, width: 2),
         ),
       ),
     );

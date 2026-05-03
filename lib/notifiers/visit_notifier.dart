@@ -1,11 +1,17 @@
 /// visit_notifier.dart
 ///
 /// Gestiona el flujo completo del check-in en TapeoGo.
-/// Coordina tres servicios: GPS para validar la ubicación,
-/// Supabase Storage para guardar la foto de la tapa, y
-/// PostgreSQL para registrar la visita en la base de datos.
-/// Tras cada check-in verificado, activa el motor de gamificación
+///
+/// Coordina tres servicios externos en un pipeline de cinco pasos:
+///   - GPS (Geolocator) para validar la presencia física del usuario.
+///   - Supabase Storage para guardar la foto de la tapa (opcional).
+///   - Supabase PostgreSQL para registrar la visita en la BD.
+///
+/// Tras cada check-in verificado por GPS activa el motor de gamificación
 /// para comprobar si el usuario ha desbloqueado nuevas medallas.
+///
+/// La foto es opcional — enriquece el registro pero no lo condiciona.
+/// El único requisito obligatorio es la verificación GPS.
 
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -16,84 +22,120 @@ import '../models/visit_model.dart';
 import '../models/badge_model.dart';
 import 'profile_notifier.dart';
 import 'badge_notifier.dart';
+import 'auth_notifier.dart';
 
 class VisitNotifier extends ChangeNotifier {
   final SupabaseClient _supabase = Supabase.instance.client;
 
+  // _isProcessing en lugar de _isLoading porque el check-in es un pipeline
+  // de cinco pasos secuenciales, no una simple carga de datos.
   bool _isProcessing = false;
   bool get isProcessing => _isProcessing;
 
   List<VisitModel> _visits = [];
   List<VisitModel> get visits => _visits;
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
   // MÉTODO: fetchHistory
-  // Carga el historial de visitas del usuario desde Supabase.
-  // Usa una consulta JOIN con 'bars(name)' para obtener el nombre del
-  // bar en una sola petición, evitando consultas adicionales.
-  // Las visitas se ordenan de más reciente a más antigua.
-  // ───────────────────────────────────────────────────────────────────────────
-
+  // Carga el historial de visitas del usuario con un JOIN a bars(name, address)
+  // para obtener nombre y dirección de cada bar en una única petición —
+  // evita el problema N+1 que ocurriría al consultar cada bar por separado.
+  //
+  // Las visitas se ordenan de más reciente a más antigua para que el
+  // historial muestre siempre la última visita en la primera posición.
+  //
+  // Los errores se propagan con rethrow para que ProfileScreen los capture
+  // y muestre el estado de error adecuado al usuario.
+  // ─────────────────────────────────────────────────────────────────────────
   Future<void> fetchHistory(String userId) async {
-    _setProcessing(true);
+    _setLoading(true);
 
     try {
       final response = await _supabase
           .from('visits')
-          .select('*, bars(name)')
+          .select('*, bars(name, address)')
           .eq('user_id', userId)
           .order('created_at', ascending: false);
 
       _visits = response.map((json) => VisitModel.fromJson(json)).toList();
-
       debugPrint('Historial cargado: ${_visits.length} visitas.');
     } catch (e) {
       debugPrint('Error al cargar historial: $e');
       rethrow;
     } finally {
-      _setProcessing(false);
+      _setLoading(false);
     }
   }
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
   // MÉTODO: performCheckIn
-  // Coordina el proceso completo del check-in en cinco pasos secuenciales.
-  // Si cualquier paso falla, el proceso se detiene para evitar
-  // inconsistencias, por ejemplo subir una foto sin guardar la visita.
-  // ───────────────────────────────────────────────────────────────────────────
-
+  // Pipeline de cinco pasos secuenciales para registrar una visita.
+  //
+  // Paso 0 — Validación de duplicados: comprueba que el usuario no ha
+  //   registrado ya la misma tapa en el mismo bar mediante maybeSingle().
+  // Paso 1 — Verificación GPS: obtiene la posición actual y comprueba
+  //   la proximidad al bar en un radio de 100 metros.
+  // Paso 2 — Subida de foto (opcional): sube la imagen a Supabase Storage
+  //   y obtiene la URL pública. Solo si el usuario seleccionó una imagen.
+  // Paso 3 — Registro en BD: inserta la visita en la tabla 'visits' con
+  //   todos los datos recopilados en los pasos anteriores.
+  // Paso 4 — Gamificación: si el GPS está verificado, evalúa las condiciones
+  //   de desbloqueo de medallas y actualiza el XP del perfil.
+  // Paso 5 — Actualización optimista: inserta la visita al inicio del
+  //   historial local para que aparezca sin recargar desde Supabase.
+  //
+  // Si cualquier paso falla se lanza excepción y el proceso se detiene,
+  // evitando estados inconsistentes (foto subida sin visita registrada).
+  //
+  // Devuelve la lista de medallas nuevas para que CheckInScreen muestre
+  // el AlertDialog y el ConfettiWidget de celebración.
+  // ─────────────────────────────────────────────────────────────────────────
   Future<List<BadgeModel>> performCheckIn({
     required BarModel bar,
     required String userId,
     required ProfileNotifier profileNotifier,
     required BadgeNotifier badgeNotifier,
+    required AuthNotifier authNotifier,
     required String recordType,
     String? comment,
-    required File imageFile,
+    File? imageFile,
   }) async {
-    _setProcessing(true);
+    _setLoading(true);
 
     try {
-      // PASO 0 — Validación previa
-      // Comprobamos que la imagen existe antes de iniciar el proceso.
-      if (!await imageFile.exists()) {
-        throw 'La imagen seleccionada ya no existe en el dispositivo.';
+      // ── PASO 0: Validación de duplicados ──
+      // maybeSingle() devuelve null si no existe el registro, evitando
+      // la excepción que lanzaría single() con cero resultados.
+      // La restricción UNIQUE(user_id, bar_id, record_type) en PostgreSQL
+      // actúa como segunda capa de seguridad ante condiciones de carrera.
+      final existing = await _supabase
+          .from('visits')
+          .select('id')
+          .eq('user_id', userId)
+          .eq('bar_id', bar.id)
+          .eq('record_type', recordType)
+          .maybeSingle();
+
+      if (existing != null) {
+        throw 'Ya has registrado esta tapa en este bar. ¡Prueba otra!';
       }
 
-      // PASO 1 — Verificación de ubicación
-      // El GPS es el primer filtro. Si el servicio está desactivado
-      // o los permisos denegados, el proceso se detiene aquí.
+      // ── PASO 1: Verificación GPS ──
+      // Obtiene la posición actual y comprueba la proximidad al bar.
+      // Si el GPS está desactivado o los permisos denegados se lanza
+      // una excepción con mensaje descriptivo en español para la UI.
       final Position userPos = await _getCurrentLocation();
       final bool isGpsVerified = _checkProximity(userPos, bar);
 
-      // PASO 2 — Subida de la foto a Supabase Storage
-      // La foto se sube antes de guardar la visita en la BD porque
-      // necesitamos la URL pública para incluirla en el registro SQL.
-      final String publicUrl = await _uploadTapaPhoto(userId, imageFile);
+      // ── PASO 2: Subida de foto a Supabase Storage (opcional) ──
+      // Solo se ejecuta si el usuario seleccionó una imagen desde la
+      // cámara o galería. La URL pública se guarda en la visita.
+      final String? publicUrl =
+          imageFile != null ? await _uploadTapaPhoto(userId, imageFile) : null;
 
-      // PASO 3 — Registro de la visita en la base de datos
-      // Guardamos la visita con todos sus datos incluyendo la URL
-      // de la foto y el resultado de la validación GPS.
+      // ── PASO 3: Registro de la visita en la BD ──
+      // Incluye gps_verified para que el motor de gamificación pueda
+      // filtrar solo las visitas físicas reales.
       final VisitModel newVisit = await _saveVisitToDatabase(
         userId: userId,
         barId: bar.id,
@@ -103,24 +145,24 @@ class VisitNotifier extends ChangeNotifier {
         comment: comment,
       );
 
-      // PASO 4 — Gamificación: XP y medallas
-      // Solo se otorga XP completo y se comprueban medallas si el
-      // check-in está verificado por GPS, garantizando que los logros
-      // corresponden a visitas físicas reales.
-      // Los check-ins manuales reciben XP reducido como incentivo
-      // pero no desbloquean medallas.
+      // ── PASO 4: Gamificación ──
+      // Check-in con GPS verificado → +20 XP + evaluación de medallas.
+      // Check-in sin GPS → +5 XP sin evaluación de medallas.
+      // La distinción garantiza que los logros corresponden a visitas reales.
+      // El XP lo suma el trigger de Supabase — no se gestiona en cliente.
       List<BadgeModel> nuevasMedallas = [];
       if (isGpsVerified) {
-        await profileNotifier.addXP(20);
-        nuevasMedallas =await badgeNotifier.updateAndCheckBadges(userId);
+        nuevasMedallas = await badgeNotifier.updateAndCheckBadges(userId);
       } else {
-        await profileNotifier.addXP(5);
-        debugPrint('Check-in manual: XP reducido, sin evaluación de medallas.');
+        debugPrint('Visita sin GPS: el trigger de BD asignará 5 XP.');
       }
 
-      // PASO 5 — Actualización local optimista
-      // Insertamos la nueva visita al inicio de la lista local para
-      // que aparezca en el historial sin necesidad de recargar todo.
+      // Refresca el perfil para mostrar el nuevo XP sumado por la BD.
+      await authNotifier.fetchProfile();
+
+      // ── PASO 5: Actualización optimista del historial local ──
+      // Inserta al inicio de _visits para que aparezca en ProfileScreen
+      // sin necesidad de recargar el historial completo desde Supabase.
       _visits.insert(0, newVisit);
 
       return nuevasMedallas;
@@ -128,24 +170,29 @@ class VisitNotifier extends ChangeNotifier {
       debugPrint('Error en el check-in: $e');
       rethrow;
     } finally {
-      _setProcessing(false);
+      _setLoading(false);
     }
   }
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
   // MÉTODO PRIVADO: _getCurrentLocation
-  // Gestiona los permisos de ubicación y obtiene la posición actual
-  // del dispositivo con alta precisión. Lanza excepciones descriptivas
-  // si el GPS está desactivado o los permisos están denegados para
-  // que la UI pueda mostrar mensajes informativos al usuario.
-  // ───────────────────────────────────────────────────────────────────────────
-
+  // Gestiona el ciclo completo de permisos de ubicación y obtiene la
+  // posición actual del dispositivo con precisión alta.
+  //
+  // Lanza excepciones con mensajes descriptivos en español para que
+  // CheckInScreen las muestre directamente al usuario sin traducción.
+  //
+  // timeLimit: 15 segundos evita que el pipeline se bloquee indefinidamente
+  // en dispositivos con señal GPS débil o en interiores.
+  // ─────────────────────────────────────────────────────────────────────────
   Future<Position> _getCurrentLocation() async {
+    // Comprueba si el servicio de localización está activo en el dispositivo.
     final bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
       throw 'El GPS está desactivado. Por favor, actívalo en los ajustes.';
     }
 
+    // Comprueba y solicita permisos de ubicación si no están concedidos.
     LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
@@ -154,6 +201,7 @@ class VisitNotifier extends ChangeNotifier {
       }
     }
 
+    // deniedForever requiere que el usuario vaya a los ajustes del sistema.
     if (permission == LocationPermission.deniedForever) {
       throw 'Los permisos de ubicación están bloqueados en los ajustes del dispositivo.';
     }
@@ -164,14 +212,15 @@ class VisitNotifier extends ChangeNotifier {
     );
   }
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
   // MÉTODO PRIVADO: _checkProximity
   // Calcula la distancia entre el usuario y el bar usando la fórmula
-  // de Haversine implementada por el paquete Geolocator.
-  // El radio de validación es de 100 metros, que permite cierta
-  // tolerancia para usuarios dentro o en la puerta del local.
-  // ───────────────────────────────────────────────────────────────────────────
-
+  // de Haversine, implementada internamente por el paquete Geolocator.
+  //
+  // El radio de 100 metros proporciona tolerancia suficiente para usuarios
+  // en el interior o en la puerta del establecimiento, sin ser tan amplio
+  // como para permitir check-ins fraudulentos desde lugares cercanos.
+  // ─────────────────────────────────────────────────────────────────────────
   bool _checkProximity(Position userPos, BarModel bar) {
     final double distance = Geolocator.distanceBetween(
       userPos.latitude,
@@ -181,17 +230,22 @@ class VisitNotifier extends ChangeNotifier {
     );
 
     debugPrint('Distancia al bar: ${distance.toStringAsFixed(2)} metros.');
-    return distance < 100;
+    return distance < 100; // Radio de validación: 100 metros
   }
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
   // MÉTODO PRIVADO: _uploadTapaPhoto
   // Sube la foto de la tapa al bucket 'tapas_photos' de Supabase Storage.
-  // El nombre del archivo incluye el timestamp para garantizar unicidad
-  // y evitar sobreescrituras entre fotos del mismo usuario.
-  // Devuelve la URL pública necesaria para guardarla en la tabla 'visits'.
-  // ───────────────────────────────────────────────────────────────────────────
-
+  //
+  // La ruta visits/{userId}/{timestamp}.jpg organiza las fotos por usuario
+  // y garantiza unicidad del nombre mediante el timestamp en milisegundos,
+  // evitando colisiones entre fotos del mismo usuario.
+  //
+  // Las Storage Policies de Supabase garantizan que cada usuario solo puede
+  // acceder a su propia carpeta — coherente con las políticas RLS de la BD.
+  //
+  // Devuelve la URL pública para persistirla en la columna photo_url de 'visits'.
+  // ─────────────────────────────────────────────────────────────────────────
   Future<String> _uploadTapaPhoto(String userId, File file) async {
     final String fileName = '${DateTime.now().millisecondsSinceEpoch}.jpg';
     final String storagePath = 'visits/$userId/$fileName';
@@ -200,46 +254,57 @@ class VisitNotifier extends ChangeNotifier {
     return _supabase.storage.from('tapas_photos').getPublicUrl(storagePath);
   }
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
   // MÉTODO PRIVADO: _saveVisitToDatabase
-  // Inserta el registro de la visita en la tabla 'visits' y devuelve
-  // el objeto completo con el JOIN de bars(name) para construir
-  // el VisitModel sin necesidad de una segunda consulta.
-  // ───────────────────────────────────────────────────────────────────────────
-
+  // Inserta la visita en la tabla 'visits' y devuelve el registro completo
+  // con un JOIN a bars(name, address) para construir el VisitModel sin
+  // una segunda consulta a Supabase.
+  //
+  // photo_url y comment son opcionales — se incluyen en el INSERT solo si
+  // no son null, respetando el esquema nullable de la BD y evitando
+  // insertar valores nulos explícitos que ocupan espacio innecesario.
+  // ─────────────────────────────────────────────────────────────────────────
   Future<VisitModel> _saveVisitToDatabase({
     required String userId,
     required String barId,
     required String recordType,
-    required String url,
+    String? url,
     required bool verified,
     String? comment,
   }) async {
-    final response = await _supabase.from('visits').insert({
+    final Map<String, dynamic> data = {
       'user_id': userId,
       'bar_id': barId,
       'record_type': recordType,
-      'photo_url': url,
       'gps_verified': verified,
-      'comment': comment,
-    }).select('*, bars(name)').single();
+      // Campos opcionales — solo se incluyen si tienen valor.
+      if (url != null) 'photo_url': url,
+      if (comment != null) 'comment': comment,
+    };
+
+    final response = await _supabase
+        .from('visits')
+        .insert(data)
+        .select('*, bars(name, address)')
+        .single();
 
     return VisitModel.fromJson(response);
   }
 
-  // ───────────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
   // MÉTODO: clearVisits
-  // Limpia el historial local al cerrar sesión para evitar que las
-  // visitas del usuario anterior sean visibles en el mismo dispositivo.
-  // Se invoca desde AuthNotifier.logout().
-  // ───────────────────────────────────────────────────────────────────────────
-
+  // Limpia el historial en memoria al cerrar sesión.
+  // Se invoca desde AuthNotifier.logout() para garantizar que el historial
+  // del usuario anterior no es visible si otro usuario inicia sesión
+  // en el mismo dispositivo.
+  // ─────────────────────────────────────────────────────────────────────────
   void clearVisits() {
     _visits = [];
     notifyListeners();
   }
 
-  void _setProcessing(bool value) {
+  // Actualiza _isProcessing y notifica a los widgets suscritos.
+  void _setLoading(bool value) {
     _isProcessing = value;
     notifyListeners();
   }
